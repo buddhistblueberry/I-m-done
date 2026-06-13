@@ -8,10 +8,13 @@ import com.mariocart.app.data.repository.ContentRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class BrowseViewModel : ViewModel() {
 
     private val repo = ContentRepository()
+    private val loadMutex = Mutex()
 
     private val _items = MutableStateFlow<List<TmdbItem>>(emptyList())
     val items: StateFlow<List<TmdbItem>> = _items
@@ -43,15 +46,21 @@ class BrowseViewModel : ViewModel() {
     }
 
     fun loadMore() {
-        val genre = _selectedGenre.value
-        page++
         viewModelScope.launch {
-            val more = repo.discover(
-                type = genre?.type ?: "movie",
-                genreId = genre?.id?.takeIf { it.isNotEmpty() },
-                page = page
-            )
-            _items.value = _items.value + more
+            loadMutex.withLock {
+                if (_isLoading.value) return@withLock
+                _isLoading.value = true
+                val genre = _selectedGenre.value
+                page++
+                val existing = _items.value.map { it.id }.toSet()
+                val more = repo.discover(
+                    type = genre?.type ?: "movie",
+                    genreId = genre?.id?.takeIf { it.isNotEmpty() },
+                    page = page
+                ).filter { it.id !in existing }
+                _items.value = _items.value + more
+                _isLoading.value = false
+            }
         }
     }
 }

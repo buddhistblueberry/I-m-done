@@ -7,10 +7,13 @@ import com.mariocart.app.data.repository.ContentRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class HomeViewModel : ViewModel() {
 
     private val repo = ContentRepository()
+    private val loadMutex = Mutex()
 
     private val _heroItems = MutableStateFlow<List<TmdbItem>>(emptyList())
     val heroItems: StateFlow<List<TmdbItem>> = _heroItems
@@ -36,6 +39,9 @@ class HomeViewModel : ViewModel() {
     private var topRatedPage = 1
     private var popularMoviesPage = 1
 
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore
+
     init { loadAll() }
 
     private fun loadAll() {
@@ -51,27 +57,62 @@ class HomeViewModel : ViewModel() {
     }
 
     fun loadMoreTrending() = viewModelScope.launch {
-        trendingPage++
-        _trending.value = _trending.value + repo.getTrending(trendingPage).filter { it.isMovie }
+        loadMutex.withLock {
+            if (_isLoadingMore.value) return@withLock
+            _isLoadingMore.value = true
+            trendingPage++
+            val existing = _trending.value.map { it.id }.toSet()
+            val more = repo.getTrending(trendingPage).filter { it.isMovie && it.id !in existing }
+            _trending.value = _trending.value + more
+            _isLoadingMore.value = false
+        }
     }
 
     fun loadMoreNowPlaying() = viewModelScope.launch {
-        nowPlayingPage++
-        _nowPlaying.value = _nowPlaying.value + repo.getNowPlaying(nowPlayingPage)
+        loadMutex.withLock {
+            if (_isLoadingMore.value) return@withLock
+            _isLoadingMore.value = true
+            nowPlayingPage++
+            val existing = _nowPlaying.value.map { it.id }.toSet()
+            val more = repo.getNowPlaying(nowPlayingPage).filter { it.id !in existing }
+            _nowPlaying.value = _nowPlaying.value + more
+            _isLoadingMore.value = false
+        }
     }
 
     fun loadMorePopularTV() = viewModelScope.launch {
-        popularTVPage++
-        _popularTV.value = _popularTV.value + repo.getPopularTV(popularTVPage)
+        loadMutex.withLock {
+            if (_isLoadingMore.value) return@withLock
+            _isLoadingMore.value = true
+            popularTVPage++
+            val existing = _popularTV.value.map { it.id }.toSet()
+            val more = repo.getPopularTV(popularTVPage).filter { it.id !in existing }
+            _popularTV.value = _popularTV.value + more
+            _isLoadingMore.value = false
+        }
     }
 
     fun loadMoreTopRated() = viewModelScope.launch {
-        topRatedPage++
-        _topRated.value = _topRated.value + repo.getTopRatedMovies(topRatedPage)
+        loadMutex.withLock {
+            if (_isLoadingMore.value) return@withLock
+            _isLoadingMore.value = true
+            topRatedPage++
+            val existing = _topRated.value.map { it.id }.toSet()
+            val more = repo.getTopRatedMovies(topRatedPage).filter { it.id !in existing }
+            _topRated.value = _topRated.value + more
+            _isLoadingMore.value = false
+        }
     }
 
     fun loadMorePopularMovies() = viewModelScope.launch {
-        popularMoviesPage++
-        _popularMovies.value = _popularMovies.value + repo.getPopularMovies(popularMoviesPage)
+        loadMutex.withLock {
+            if (_isLoadingMore.value) return@withLock
+            _isLoadingMore.value = true
+            popularMoviesPage++
+            val existing = _popularMovies.value.map { it.id }.toSet()
+            val more = repo.getPopularMovies(popularMoviesPage).filter { it.id !in existing }
+            _popularMovies.value = _popularMovies.value + more
+            _isLoadingMore.value = false
+        }
     }
 }

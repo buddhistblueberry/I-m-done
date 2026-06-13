@@ -3,6 +3,9 @@ package com.mariocart.app.ui
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.lifecycle.lifecycleScope
+import com.mariocart.app.data.server.ServerManager
+import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -56,6 +59,10 @@ import com.mariocart.app.ui.tv.TvScreen
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Launch server health check in background
+        lifecycleScope.launch {
+            ServerManager.initialize(this@MainActivity)
+        }
         setContent {
             MarioCartTheme {
                 MainApp(

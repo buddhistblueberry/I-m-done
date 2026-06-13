@@ -29,25 +29,17 @@ import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.mariocart.app.data.model.StreamingServer
-import com.mariocart.app.data.repository.ContentRepository
+import com.mariocart.app.data.server.ServerManager
 
-/**
- * Fullscreen in-app video player activity.
- *
- * Uses a sandboxed, ad-blocked internal renderer for the embed servers —
- * nothing ever opens in an external browser. Includes the same popup-killer,
- * ad-blocker, redirect-blocker, and click-hijack-guard from the HTML version.
- * Server auto-fallback tries the next source if loading fails within 15 s.
- */
 class PlayerActivity : AppCompatActivity() {
 
     companion object {
         private const val EXTRA_TMDB_ID = "tmdb_id"
-        private const val EXTRA_TYPE = "type"          // "movie" or "tv"
+        private const val EXTRA_TYPE = "type"
         private const val EXTRA_TITLE = "title"
         private const val EXTRA_SEASON = "season"
         private const val EXTRA_EPISODE = "episode"
-        private const val FALLBACK_TIMEOUT_MS = 15_000L
+        private const val FALLBACK_TIMEOUT_MS = 12_000L
 
         fun newIntent(
             context: Context,
@@ -65,13 +57,15 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private val repo = ContentRepository()
-    private val servers: List<StreamingServer> get() = repo.streamingServers
+    private var servers: List<StreamingServer> = emptyList()
     private var currentServerIndex = 0
     private var tmdbId = 0
     private var contentType = "movie"
     private var season = 1
     private var episode = 1
+    private var currentEmbedUrl = ""
+    private var redirectCount = 0
+    private var pageLoadFailed = false
 
     private lateinit var playerView: WebView
     private lateinit var statusText: TextView
@@ -85,7 +79,7 @@ class PlayerActivity : AppCompatActivity() {
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
-    // --- Ad / redirect blocking ---
+    // Expanded ad/redirect domain blocklist
     private val adDomains = listOf(
         "doubleclick", "googlesyndication", "adservice", "adnxs", "outbrain",
         "taboola", "revcontent", "mgid", "propellerads", "popcash", "popads",
@@ -94,13 +88,37 @@ class PlayerActivity : AppCompatActivity() {
         "mondiad", "bidvertiser", "advertserve", "yieldmo", "undertone",
         "adblade", "media.net", "zedo", "valueclick", "tradedoubler",
         "popunder", "onclickads", "redirect", "betterads", "ad-maven",
-        "admaven", "adcash", "adfly", "shorte.st", "linkvertise"
+        "admaven", "adcash", "adfly", "shorte.st", "linkvertise",
+        "ouo.io", "ouo.press", "bc.vc", "adf.ly", "bit.ly/ad",
+        "linkbucks", "adfoc.us", "coinurl", "url.cn", "goo.gl/ad",
+        "clk.sh", "shrink.pe", "earnow", "adlinkfly", "linkshrink",
+        "grabify", "iplogger", "blasze", "ps.ht", "2no.co",
+        "pornhub", "xvideos", "xhamster", "redtube", "youporn",
+        "chaturbate", "livejasmin", "cam4", "myfreecams", "bongacams",
+        "1xbet", "betway", "bet365", "stake.com", "roobet",
+        "track.", "tracker.", "tracking.", "click.", "clicks.",
+        "serve.", "servedby.", "delivery.", "pagead", "ads.",
+        "banner.", "popup.", "pop.", "redirect.", "redir."
+    )
+
+    // Redirect domain patterns — if main frame navigates here, reload embed
+    private val redirectDomains = listOf(
+        "bit.ly", "tinyurl", "t.co", "goo.gl", "ow.ly",
+        "is.gd", "buff.ly", "adf.ly", "ouo.io", "bc.vc",
+        "shrink", "short", "redir", "linkvertise", "link.to"
     )
 
     private fun isAdUrl(url: String): Boolean {
         return try {
             val host = Uri.parse(url).host?.lowercase() ?: return false
             adDomains.any { host.contains(it) }
+        } catch (_: Exception) { false }
+    }
+
+    private fun isRedirectUrl(url: String): Boolean {
+        return try {
+            val host = Uri.parse(url).host?.lowercase() ?: return false
+            redirectDomains.any { host.contains(it) }
         } catch (_: Exception) { false }
     }
 
@@ -120,7 +138,10 @@ class PlayerActivity : AppCompatActivity() {
         episode = intent.getIntExtra(EXTRA_EPISODE, 1)
         val title = intent.getStringExtra(EXTRA_TITLE) ?: ""
 
-        // ---- Build layout programmatically ----
+        // Get health-checked servers from ServerManager
+        servers = ServerManager.getOrderedServers()
+
+        // ---- Build layout ----
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
@@ -149,16 +170,7 @@ class PlayerActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
-        val serverNames = servers.map { it.name }.toTypedArray()
-        serverSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, serverNames).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
-        serverSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                if (pos != currentServerIndex) loadServer(pos)
-            }
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
-        }
+        setupServerSpinner()
         topBar.addView(serverSpinner)
 
         val closeBtn = ImageButton(this).apply {
@@ -190,7 +202,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         root.addView(progressBar)
 
-        // Fullscreen container (for fullscreen video)
+        // Fullscreen container
         fullscreenContainer = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             visibility = View.GONE
@@ -201,7 +213,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         root.addView(fullscreenContainer)
 
-        // WebView for the embed player
+        // WebView
         playerView = WebView(this).apply {
             setBackgroundColor(Color.BLACK)
             layoutParams = LinearLayout.LayoutParams(
@@ -210,7 +222,7 @@ class PlayerActivity : AppCompatActivity() {
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                mediaPlaybackRequiresUserGesture = false
+                mediaPlaybackRequiresUserGesture = false  // AUTO-PLAY
                 allowFileAccess = false
                 allowContentAccess = false
                 setSupportMultipleWindows(false)
@@ -224,17 +236,57 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView, request: WebResourceRequest
+                ): Boolean {
                     val url = request.url.toString()
-                    // Block ad URLs and external navigation
+
+                    // Block ad URLs
                     if (isAdUrl(url)) return true
-                    // Stay in-app: load inside the WebView
+
+                    // Detect redirect — reload the embed instead of following
+                    if (isRedirectUrl(url)) {
+                        redirectCount++
+                        if (redirectCount > 3) {
+                            setStatus("Too many redirects, trying next server...")
+                            tryNextServer()
+                        } else {
+                            setStatus("Redirect blocked, reloading...")
+                            handler.postDelayed({ reloadCurrentServer() }, 500)
+                        }
+                        return true
+                    }
+
+                    // If the main frame navigates away from the embed domain, reload
+                    if (request.isForMainFrame && currentEmbedUrl.isNotEmpty()) {
+                        val embedHost = Uri.parse(currentEmbedUrl).host?.lowercase() ?: ""
+                        val newHost = Uri.parse(url).host?.lowercase() ?: ""
+                        if (embedHost.isNotEmpty() && newHost.isNotEmpty() && newHost != embedHost) {
+                            redirectCount++
+                            if (redirectCount > 3) {
+                                setStatus("Server keeps redirecting, trying next...")
+                                tryNextServer()
+                            } else {
+                                setStatus("Redirect caught, reloading player...")
+                                handler.postDelayed({ reloadCurrentServer() }, 500)
+                            }
+                            return true
+                        }
+                    }
+
                     return false
                 }
 
-                override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                override fun shouldInterceptRequest(
+                    view: WebView, request: WebResourceRequest
+                ): WebResourceResponse? {
                     val url = request.url.toString()
                     if (isAdUrl(url)) {
+                        return WebResourceResponse("text/plain", "UTF-8", null)
+                    }
+                    // Block known ad resource types
+                    val path = request.url.path?.lowercase() ?: ""
+                    if (path.endsWith(".gif") && url.contains("ad")) {
                         return WebResourceResponse("text/plain", "UTF-8", null)
                     }
                     return super.shouldInterceptRequest(view, request)
@@ -242,15 +294,19 @@ class PlayerActivity : AppCompatActivity() {
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     progressBar.visibility = View.VISIBLE
+                    pageLoadFailed = false
                     startFallbackTimer()
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     progressBar.visibility = View.GONE
                     cancelFallbackTimer()
-                    setStatus("")
-                    // Inject ad-blocking CSS/JS into the loaded page
+                    if (!pageLoadFailed) {
+                        setStatus("")
+                        redirectCount = 0
+                    }
                     injectAdBlocker(view)
+                    injectAutoPlay(view)
                 }
 
                 override fun onReceivedError(
@@ -258,14 +314,34 @@ class PlayerActivity : AppCompatActivity() {
                     error: android.webkit.WebResourceError?
                 ) {
                     if (request?.isForMainFrame == true) {
+                        pageLoadFailed = true
                         setStatus("\u26A0\uFE0F Server error, trying next...")
+                        ServerManager.markServerDead(
+                            servers.getOrNull(currentServerIndex)?.name ?: ""
+                        )
                         tryNextServer()
+                    }
+                }
+
+                override fun onReceivedHttpError(
+                    view: WebView?, request: WebResourceRequest?,
+                    errorResponse: WebResourceResponse?
+                ) {
+                    if (request?.isForMainFrame == true) {
+                        val code = errorResponse?.statusCode ?: 0
+                        if (code >= 500) {
+                            pageLoadFailed = true
+                            setStatus("\u26A0\uFE0F Server returned $code, trying next...")
+                            ServerManager.markServerDead(
+                                servers.getOrNull(currentServerIndex)?.name ?: ""
+                            )
+                            tryNextServer()
+                        }
                     }
                 }
             }
 
             webChromeClient = object : WebChromeClient() {
-                // Support fullscreen video playback
                 override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                     customView = view
                     customViewCallback = callback
@@ -283,7 +359,6 @@ class PlayerActivity : AppCompatActivity() {
                     customViewCallback = null
                 }
 
-                // Block popups
                 override fun onCreateWindow(
                     view: WebView?, isDialog: Boolean,
                     isUserGesture: Boolean, resultMsg: android.os.Message?
@@ -294,8 +369,25 @@ class PlayerActivity : AppCompatActivity() {
 
         setContentView(root)
 
-        // Start loading the first server
+        // Auto-play: load first server immediately
         loadServer(0)
+    }
+
+    private fun setupServerSpinner() {
+        val serverNames = servers.map { it.name }.toTypedArray()
+        serverSpinner.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item, serverNames
+        ).apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+        serverSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: AdapterView<*>?, v: View?, pos: Int, id: Long
+            ) {
+                if (pos != currentServerIndex) loadServer(pos)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
     }
 
     private fun loadServer(index: Int) {
@@ -304,16 +396,24 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
         currentServerIndex = index
+        redirectCount = 0
         serverSpinner.setSelection(index, false)
         val server = servers[index]
         setStatus("\u23F3 Loading ${server.name}...")
 
-        val url = if (contentType == "movie") {
+        currentEmbedUrl = if (contentType == "movie") {
             server.movieUrl(tmdbId)
         } else {
             server.tvUrl(tmdbId, season, episode)
         }
-        playerView.loadUrl(url)
+        playerView.loadUrl(currentEmbedUrl)
+    }
+
+    private fun reloadCurrentServer() {
+        if (currentEmbedUrl.isNotEmpty()) {
+            setStatus("\u23F3 Reloading ${servers.getOrNull(currentServerIndex)?.name ?: ""}...")
+            playerView.loadUrl(currentEmbedUrl)
+        }
     }
 
     private fun tryNextServer() {
@@ -328,7 +428,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun startFallbackTimer() {
         cancelFallbackTimer()
         fallbackRunnable = Runnable {
-            setStatus("\u26A0\uFE0F Switching to next server...")
+            setStatus("\u26A0\uFE0F Timeout, switching server...")
             tryNextServer()
         }
         handler.postDelayed(fallbackRunnable!!, FALLBACK_TIMEOUT_MS)
@@ -354,38 +454,116 @@ class PlayerActivity : AppCompatActivity() {
     private fun injectAdBlocker(view: WebView?) {
         view?.evaluateJavascript("""
             (function() {
-                // Remove common ad elements
+                // Remove ad elements
                 var selectors = [
                     'iframe[src*="doubleclick"]', 'iframe[src*="googlesyndication"]',
                     'iframe[src*="adservice"]', 'div[id*="ad-"]', 'div[class*="ad-"]',
                     'div[id*="ads"]', 'div[class*="ads"]', '.ad-container',
                     '.ad-overlay', '.popup-overlay', '[class*="popup"]',
-                    '[id*="overlay"]', '.modal-backdrop'
+                    '[id*="overlay"]', '.modal-backdrop', '[class*="banner"]',
+                    '[id*="banner"]', '[class*="sticky"]', '[class*="float"]',
+                    '.overlay', '#overlay', '.modal', '.popup',
+                    'div[style*="z-index: 9999"]', 'div[style*="z-index:9999"]',
+                    'div[style*="z-index: 99999"]', 'div[style*="z-index:99999"]',
+                    'div[style*="position: fixed"][style*="z-index"]',
+                    'a[target="_blank"]', '[onclick*="window.open"]'
                 ];
                 selectors.forEach(function(s) {
-                    document.querySelectorAll(s).forEach(function(el) { el.remove(); });
+                    try {
+                        document.querySelectorAll(s).forEach(function(el) {
+                            if (!el.querySelector('video') && !el.querySelector('iframe[src*="embed"]')) {
+                                el.remove();
+                            }
+                        });
+                    } catch(e) {}
                 });
 
-                // Block window.open
+                // Block window.open permanently
                 window.open = function() { return null; };
+                
+                // Block alert/confirm/prompt
+                window.alert = function() {};
+                window.confirm = function() { return false; };
+                window.prompt = function() { return null; };
 
-                // Remove invisible overlays
+                // Remove invisible high-z-index overlays
                 var all = document.querySelectorAll('*');
                 for (var i = 0; i < all.length; i++) {
-                    var el = all[i];
-                    var st = window.getComputedStyle(el);
-                    if ((st.position === 'fixed' || st.position === 'absolute') &&
-                        parseInt(st.zIndex) > 9000 &&
-                        parseFloat(st.opacity) < 0.15) {
-                        el.remove();
-                    }
+                    try {
+                        var el = all[i];
+                        var st = window.getComputedStyle(el);
+                        var z = parseInt(st.zIndex) || 0;
+                        if ((st.position === 'fixed' || st.position === 'absolute') && z > 9000) {
+                            if (parseFloat(st.opacity) < 0.15 || 
+                                el.offsetWidth > window.innerWidth * 0.8 && el.offsetHeight > window.innerHeight * 0.8) {
+                                if (!el.querySelector('video')) {
+                                    el.remove();
+                                }
+                            }
+                        }
+                    } catch(e) {}
+                }
+
+                // Disable onclick handlers on body that open popups
+                document.body.onclick = null;
+                document.body.onmousedown = null;
+                document.body.onmouseup = null;
+
+                // Block navigation away via beforeunload
+                window.onbeforeunload = null;
+
+                // Mutation observer to auto-remove future ad injections
+                if (!window._adObserver) {
+                    window._adObserver = new MutationObserver(function(mutations) {
+                        mutations.forEach(function(m) {
+                            m.addedNodes.forEach(function(node) {
+                                if (node.nodeType === 1) {
+                                    try {
+                                        var st = window.getComputedStyle(node);
+                                        var z = parseInt(st.zIndex) || 0;
+                                        if ((st.position === 'fixed' || st.position === 'absolute') && z > 9000) {
+                                            if (!node.querySelector('video') && !node.querySelector('iframe[src*="embed"]')) {
+                                                node.remove();
+                                            }
+                                        }
+                                    } catch(e) {}
+                                }
+                            });
+                        });
+                    });
+                    window._adObserver.observe(document.body, {childList: true, subtree: true});
                 }
             })();
         """.trimIndent(), null)
     }
 
+    private fun injectAutoPlay(view: WebView?) {
+        view?.evaluateJavascript("""
+            (function() {
+                // Auto-click play buttons
+                var playBtns = document.querySelectorAll(
+                    '[class*="play"], [id*="play"], button[aria-label*="play"], ' +
+                    '.vjs-big-play-button, .jw-icon-display, [class*="Play"], ' +
+                    'svg[data-icon="play"], [class*="start"], [class*="btn-play"]'
+                );
+                if (playBtns.length > 0) {
+                    playBtns[0].click();
+                }
+                
+                // Auto-play any video elements
+                var videos = document.querySelectorAll('video');
+                videos.forEach(function(v) {
+                    v.muted = false;
+                    v.play().catch(function() {
+                        v.muted = true;
+                        v.play().catch(function(){});
+                    });
+                });
+            })();
+        """.trimIndent(), null)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // Handle TV remote back button
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (customView != null) {
                 playerView.webChromeClient?.onHideCustomView()

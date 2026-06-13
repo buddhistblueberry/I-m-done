@@ -54,7 +54,8 @@ fun ContentRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(items, key = { "${it.id}_${it.contentType}" }) { item ->
+            items(items.size, key = { idx -> "${items[idx].id}_${items[idx].contentType}_$idx" }) { idx ->
+                val item = items[idx]
                 ContentCard(
                     item = item,
                     onClick = { onItemClick(item) }

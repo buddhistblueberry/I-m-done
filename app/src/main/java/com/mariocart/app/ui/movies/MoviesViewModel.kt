@@ -7,10 +7,13 @@ import com.mariocart.app.data.repository.ContentRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class MoviesViewModel : ViewModel() {
 
     private val repo = ContentRepository()
+    private val loadMutex = Mutex()
 
     private val _popular = MutableStateFlow<List<TmdbItem>>(emptyList())
     val popular: StateFlow<List<TmdbItem>> = _popular
@@ -22,6 +25,8 @@ class MoviesViewModel : ViewModel() {
     val topRated: StateFlow<List<TmdbItem>> = _topRated
 
     private var popularPage = 1
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore
 
     init { load() }
 
@@ -32,7 +37,14 @@ class MoviesViewModel : ViewModel() {
     }
 
     fun loadMore() = viewModelScope.launch {
-        popularPage++
-        _popular.value = _popular.value + repo.getPopularMovies(popularPage)
+        loadMutex.withLock {
+            if (_isLoadingMore.value) return@withLock
+            _isLoadingMore.value = true
+            popularPage++
+            val existing = _popular.value.map { it.id }.toSet()
+            val more = repo.getPopularMovies(popularPage).filter { it.id !in existing }
+            _popular.value = _popular.value + more
+            _isLoadingMore.value = false
+        }
     }
 }
