@@ -10,7 +10,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.KeyEvent
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -30,9 +29,16 @@ import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.ui.PlayerView
 import com.mariocart.app.data.model.StreamingServer
 import com.mariocart.app.data.server.ServerManager
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerActivity : AppCompatActivity() {
 
     companion object {
@@ -41,10 +47,10 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_TITLE = "title"
         private const val EXTRA_SEASON = "season"
         private const val EXTRA_EPISODE = "episode"
-        private const val FALLBACK_TIMEOUT_MS = 12_000L
+        private const val FALLBACK_TIMEOUT_MS = 15_000L
         private const val AUTO_PLAY_RETRY_MS = 2_000L
         private const val AUTO_PLAY_MAX_RETRIES = 8
-        private const val VIDEO_CHECK_INTERVAL_MS = 3_000L
+        private const val EXOPLAYER_EXTRACT_TIMEOUT_MS = 10_000L
         private const val MAX_RELOAD_ATTEMPTS = 3
 
         fun newIntent(
@@ -77,13 +83,16 @@ class PlayerActivity : AppCompatActivity() {
     private var isFullscreen = false
     private var isSeeking = false
     private var reloadAttempts = 0
-    private var videoCheckRunnable: Runnable? = null
+    private var usingExoPlayer = false
+    private var extractedVideoUrl: String? = null
 
-    private lateinit var playerView: WebView
+    // Views
+    private lateinit var webView: WebView
+    private lateinit var exoPlayerView: PlayerView
     private lateinit var statusText: TextView
     private lateinit var titleText: TextView
     private lateinit var serverSpinner: Spinner
-    private lateinit var progressBar: ProgressBar
+    private lateinit var loadingBar: ProgressBar
     private lateinit var fullscreenContainer: FrameLayout
     private lateinit var controlBar: LinearLayout
     private lateinit var playPauseBtn: ImageButton
@@ -95,15 +104,27 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var timeText: TextView
     private lateinit var seekRow: LinearLayout
     private lateinit var controlsContainer: LinearLayout
-    private var progressRunnable: Runnable? = null
+    private lateinit var playerFrame: FrameLayout
 
+    private var exoPlayer: ExoPlayer? = null
+    private var progressRunnable: Runnable? = null
     private val handler = Handler(Looper.getMainLooper())
     private var fallbackRunnable: Runnable? = null
     private var autoPlayRunnable: Runnable? = null
+    private var extractTimeoutRunnable: Runnable? = null
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
-    // Comprehensive ad domain blocklist (inspired by uBlock Origin + EasyList)
+    // Video URL patterns to intercept
+    private val videoExtensions = listOf(
+        ".m3u8", ".mp4", ".webm", ".mkv", ".avi", ".flv", ".ts"
+    )
+    private val videoMimePatterns = listOf(
+        "application/x-mpegurl", "application/vnd.apple.mpegurl",
+        "video/mp4", "video/webm", "video/x-matroska"
+    )
+
+    // Ad domain blocklist
     private val adDomains = listOf(
         "doubleclick", "googlesyndication", "adservice", "adnxs", "outbrain",
         "taboola", "revcontent", "mgid", "propellerads", "popcash", "popads",
@@ -127,7 +148,6 @@ class PlayerActivity : AppCompatActivity() {
         "carbonads", "ethicalads", "buysellads"
     )
 
-    // Substrings found in ad/tracker URL paths
     private val adPathPatterns = listOf(
         "/ad/", "/ads/", "/advert", "/banner", "/popup", "/popunder",
         "/track", "/click", "/redirect", "/redir", "/pagead",
@@ -142,6 +162,11 @@ class PlayerActivity : AppCompatActivity() {
             val path = Uri.parse(url).path?.lowercase() ?: ""
             adPathPatterns.any { path.contains(it) || lower.contains(it) }
         } catch (_: Exception) { false }
+    }
+
+    private fun isVideoUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return videoExtensions.any { lower.contains(it) } && !isAdUrl(url)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -168,13 +193,13 @@ class PlayerActivity : AppCompatActivity() {
             setBackgroundColor(Color.BLACK)
         }
 
+        // Top bar: title + server spinner + close
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#141414"))
             setPadding(24, 12, 24, 12)
             gravity = android.view.Gravity.CENTER_VERTICAL
         }
-
         titleText = TextView(this).apply {
             text = title
             setTextColor(Color.WHITE)
@@ -183,27 +208,23 @@ class PlayerActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
         topBar.addView(titleText)
-
         serverSpinner = Spinner(this).apply {
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
         setupServerSpinner()
         topBar.addView(serverSpinner)
-
-        val closeBtn = ImageButton(this).apply {
+        topBar.addView(ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
             setBackgroundColor(Color.TRANSPARENT)
             setColorFilter(Color.WHITE)
             setPadding(16, 8, 8, 8)
             setOnClickListener { finish() }
-        }
-        topBar.addView(closeBtn)
-
+        })
         root.addView(topBar)
 
+        // Status text
         statusText = TextView(this).apply {
             setTextColor(Color.parseColor("#AAAAAA"))
             textSize = 12f
@@ -213,28 +234,48 @@ class PlayerActivity : AppCompatActivity() {
         }
         root.addView(statusText)
 
-        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+        // Loading bar
+        loadingBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
             visibility = View.GONE
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 6)
         }
-        root.addView(progressBar)
+        root.addView(loadingBar)
 
+        // Fullscreen container (for WebView custom fullscreen)
         fullscreenContainer = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
         root.addView(fullscreenContainer)
 
-        playerView = WebView(this).apply {
-            setBackgroundColor(Color.BLACK)
+        // Player frame: holds ExoPlayer, WebView, and controls overlay
+        playerFrame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
             )
+            setBackgroundColor(Color.BLACK)
+        }
+
+        // ExoPlayer view (native video player — visible when video URL is extracted)
+        exoPlayerView = PlayerView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            useController = false // We use our own controls
+            visibility = View.GONE
+        }
+        playerFrame.addView(exoPlayerView)
+
+        // WebView (loads embed page — visible as fallback)
+        webView = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(Color.BLACK)
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -256,26 +297,18 @@ class PlayerActivity : AppCompatActivity() {
                     view: WebView, request: WebResourceRequest
                 ): Boolean {
                     val url = request.url.toString()
-
-                    // Block ad URLs always
                     if (isAdUrl(url)) return true
-
-                    // Block ALL main-frame navigations away from embed domain
                     if (request.isForMainFrame && currentEmbedDomain.isNotEmpty()) {
                         val newHost = request.url.host?.lowercase() ?: ""
                         if (newHost.isNotEmpty() && newHost != currentEmbedDomain &&
                             !newHost.endsWith(".$currentEmbedDomain")
                         ) {
-                            // This is a redirect away from the embed — block and reload
                             setStatus("Redirect blocked \u2192 reloading...")
                             handler.postDelayed({ reloadCurrentServer() }, 300)
                             return true
                         }
                     }
-
-                    // Block sub-frame navigations to known ad/redirect domains
                     if (!request.isForMainFrame && isAdUrl(url)) return true
-
                     return false
                 }
 
@@ -286,40 +319,35 @@ class PlayerActivity : AppCompatActivity() {
                     if (isAdUrl(url)) {
                         return WebResourceResponse("text/plain", "UTF-8", null)
                     }
+                    // Intercept video URLs for ExoPlayer
+                    if (!usingExoPlayer && extractedVideoUrl == null && isVideoUrl(url)) {
+                        extractedVideoUrl = url
+                        handler.post { switchToExoPlayer(url) }
+                    }
                     return super.shouldInterceptRequest(view, request)
                 }
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                    progressBar.visibility = View.VISIBLE
+                    loadingBar.visibility = View.VISIBLE
                     pageLoadFailed = false
                     cancelAutoPlayTimer()
                     startFallbackTimer()
-                    // Inject CSS early to hide original play button before page renders
-                    injectHideOriginalPlayButton(view)
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
-                    progressBar.visibility = View.GONE
+                    loadingBar.visibility = View.GONE
                     cancelFallbackTimer()
-                    if (!pageLoadFailed) {
-                        setStatus("")
-                    }
-                    // Inject the redirect guard FIRST (before page scripts run their timers)
+                    if (!pageLoadFailed) setStatus("")
                     injectRedirectGuard(view)
-                    // Then inject ad blocker CSS/DOM removal
                     injectAdBlocker(view)
-                    // Hide the embed's original play button
-                    injectHideOriginalPlayButton(view)
-                    // Then start auto-play attempts
+                    // Start auto-play to trigger video loading (so we can intercept the URL)
                     autoPlayRetries = 0
                     startAutoPlayTimer()
-                    // Mark as playing once auto-play kicks in
-                    isPlaying = true
-                    handler.post { playPauseBtn.setImageResource(android.R.drawable.ic_media_pause) }
-                    // Start progress bar updater
-                    startProgressUpdater()
-                    // Start video check timer (reload if no video found)
-                    startVideoCheckTimer()
+                    // If we haven't extracted a video URL yet, start the timeout
+                    // to fall back to WebView mode
+                    if (!usingExoPlayer && extractedVideoUrl == null) {
+                        startExtractTimeout()
+                    }
                 }
 
                 override fun onReceivedError(
@@ -360,37 +388,25 @@ class PlayerActivity : AppCompatActivity() {
                     customViewCallback = callback
                     fullscreenContainer.addView(view)
                     fullscreenContainer.visibility = View.VISIBLE
-                    playerView.visibility = View.GONE
+                    webView.visibility = View.GONE
                 }
-
                 override fun onHideCustomView() {
                     fullscreenContainer.removeAllViews()
                     fullscreenContainer.visibility = View.GONE
-                    playerView.visibility = View.VISIBLE
+                    webView.visibility = View.VISIBLE
                     customViewCallback?.onCustomViewHidden()
                     customView = null
                     customViewCallback = null
                 }
-
                 override fun onCreateWindow(
                     view: WebView?, isDialog: Boolean,
                     isUserGesture: Boolean, resultMsg: android.os.Message?
                 ): Boolean = false
             }
         }
-        // Wrap playerView and controls in a FrameLayout so controls can overlay in fullscreen
-        val playerFrame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
-            )
-        }
-        playerView.layoutParams = FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
-        playerFrame.addView(playerView)
+        playerFrame.addView(webView)
 
-        // Controls container — sits at bottom, overlays on top of video in fullscreen
+        // ---- Custom controls overlay (at bottom of playerFrame) ----
         controlsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#CC141414"))
@@ -401,13 +417,12 @@ class PlayerActivity : AppCompatActivity() {
             )
         }
 
-        // ---- Progress bar (seek bar) ----
+        // Seek bar row
         seekRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(24, 8, 24, 0)
             gravity = android.view.Gravity.CENTER_VERTICAL
         }
-
         videoSeekBar = SeekBar(this).apply {
             max = 1000
             progress = 0
@@ -421,7 +436,6 @@ class PlayerActivity : AppCompatActivity() {
             })
         }
         seekRow.addView(videoSeekBar)
-
         timeText = TextView(this).apply {
             setTextColor(Color.parseColor("#AAAAAA"))
             textSize = 11f
@@ -429,16 +443,14 @@ class PlayerActivity : AppCompatActivity() {
             setPadding(12, 0, 0, 0)
         }
         seekRow.addView(timeText)
-
         controlsContainer.addView(seekRow)
 
-        // ---- Control buttons row ----
+        // Control buttons row
         controlBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(16, 8, 16, 12)
             gravity = android.view.Gravity.CENTER
         }
-
         skipBackBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_media_rew)
             setBackgroundColor(Color.TRANSPARENT)
@@ -447,7 +459,6 @@ class PlayerActivity : AppCompatActivity() {
             setOnClickListener { skipVideo(-10) }
         }
         controlBar.addView(skipBackBtn)
-
         playPauseBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_media_play)
             setBackgroundColor(Color.TRANSPARENT)
@@ -456,7 +467,6 @@ class PlayerActivity : AppCompatActivity() {
             setOnClickListener { togglePlayPause() }
         }
         controlBar.addView(playPauseBtn)
-
         skipForwardBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_media_ff)
             setBackgroundColor(Color.TRANSPARENT)
@@ -465,12 +475,9 @@ class PlayerActivity : AppCompatActivity() {
             setOnClickListener { skipVideo(10) }
         }
         controlBar.addView(skipForwardBtn)
-
-        // Spacer
         controlBar.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         })
-
         fullscreenBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_crop)
             setBackgroundColor(Color.TRANSPARENT)
@@ -479,243 +486,169 @@ class PlayerActivity : AppCompatActivity() {
             setOnClickListener { toggleFullscreen() }
         }
         controlBar.addView(fullscreenBtn)
-
         controlsContainer.addView(controlBar)
         playerFrame.addView(controlsContainer)
-        root.addView(playerFrame)
 
+        root.addView(playerFrame)
         setContentView(root)
 
-        // Auto-play: load first server immediately
+        // Load first server
         loadServer(0)
     }
 
-    // --- Video controls ---
-    // The video is typically inside a cross-origin iframe so we can't access
-    // it directly via JS. Instead we use touch/key simulation and a JS bridge
-    // that works both for same-origin and falls back to simulation.
+    // ---- ExoPlayer: native video playback ----
 
-    private fun runVideoCommand(js: String) {
-        playerView.evaluateJavascript("""
-            (function(){
-                var findVideo = function() {
-                    var v = document.querySelector('video');
-                    if(v) return v;
-                    var iframes = document.querySelectorAll('iframe');
-                    for(var i=0;i<iframes.length;i++){
-                        try {
-                            var fv = iframes[i].contentDocument.querySelector('video');
-                            if(fv) return fv;
-                        } catch(e){}
+    private fun switchToExoPlayer(videoUrl: String) {
+        if (usingExoPlayer) return
+        usingExoPlayer = true
+        cancelExtractTimeout()
+        cancelAutoPlayTimer()
+        setStatus("")
+
+        // Hide WebView, show ExoPlayer
+        webView.visibility = View.GONE
+        exoPlayerView.visibility = View.VISIBLE
+
+        // Create ExoPlayer
+        val player = ExoPlayer.Builder(this).build()
+        exoPlayer = player
+        exoPlayerView.player = player
+
+        val dataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+            .setAllowCrossProtocolRedirects(true)
+
+        val mediaItem = MediaItem.fromUri(videoUrl)
+
+        if (videoUrl.lowercase().contains(".m3u8")) {
+            val hlsSource = HlsMediaSource.Factory(dataSourceFactory)
+                .createMediaSource(mediaItem)
+            player.setMediaSource(hlsSource)
+        } else {
+            val mediaSource = androidx.media3.exoplayer.source.ProgressiveMediaSource
+                .Factory(dataSourceFactory)
+                .createMediaSource(mediaItem)
+            player.setMediaSource(mediaSource)
+        }
+
+        player.prepare()
+        player.playWhenReady = true
+        isPlaying = true
+        playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                when (state) {
+                    Player.STATE_READY -> {
+                        setStatus("")
+                        startProgressUpdater()
                     }
-                    return null;
-                };
-                var v = findVideo();
-                if(v) { $js return 'ok'; }
-                return 'no-video';
-            })();
-        """.trimIndent()) { result ->
-            val r = result.trim('"')
-            if (r == "no-video") {
-                // Cross-origin iframe — fall back to simulation
-                handler.post { simulateFallbackCommand(js) }
+                    Player.STATE_ENDED -> {
+                        isPlaying = false
+                        playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+                    }
+                    Player.STATE_BUFFERING -> setStatus("\u23F3 Buffering...")
+                    Player.STATE_IDLE -> {}
+                }
             }
-        }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                // ExoPlayer failed — fall back to WebView mode
+                setStatus("\u26A0\uFE0F Native player failed, using embed...")
+                switchToWebViewFallback()
+            }
+        })
+
+        startProgressUpdater()
     }
 
-    private fun simulateFallbackCommand(js: String) {
-        when {
-            js.contains("pause") -> simulateTapOnCenter()
-            js.contains("play") -> simulateTapOnCenter()
-            js.contains("+= 10") || js.contains("+= -10") -> {
-                // Send arrow key to the WebView
-                val keyCode = if (js.contains("-10")) KeyEvent.KEYCODE_DPAD_LEFT
-                              else KeyEvent.KEYCODE_DPAD_RIGHT
-                playerView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-                playerView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
-            }
-            js.contains("currentTime") -> {
-                // Seek — simulate click at proportional position
-                simulateTapOnCenter()
-            }
-        }
+    private fun switchToWebViewFallback() {
+        usingExoPlayer = false
+        extractedVideoUrl = null
+        releaseExoPlayer()
+
+        exoPlayerView.visibility = View.GONE
+        webView.visibility = View.VISIBLE
+
+        // Inject CSS to hide ALL embed UI except the <video> tag
+        injectHideEmbedUI(webView)
+        // Inject auto-play
+        autoPlayRetries = 0
+        startAutoPlayTimer()
+        startProgressUpdater()
     }
 
-    private fun simulateTapOnCenter() {
-        val x = playerView.width / 2f
-        val y = playerView.height / 2f
-        val downTime = android.os.SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0)
-        val up = MotionEvent.obtain(downTime, downTime + 50, MotionEvent.ACTION_UP, x, y, 0)
-        playerView.dispatchTouchEvent(down)
-        playerView.dispatchTouchEvent(up)
-        down.recycle()
-        up.recycle()
+    private fun releaseExoPlayer() {
+        exoPlayer?.release()
+        exoPlayer = null
     }
+
+    private fun startExtractTimeout() {
+        cancelExtractTimeout()
+        extractTimeoutRunnable = Runnable {
+            if (!usingExoPlayer && extractedVideoUrl == null) {
+                // No video URL was intercepted — fall back to WebView with hidden UI
+                setStatus("Using embed player...")
+                switchToWebViewFallback()
+            }
+        }
+        handler.postDelayed(extractTimeoutRunnable!!, EXOPLAYER_EXTRACT_TIMEOUT_MS)
+    }
+
+    private fun cancelExtractTimeout() {
+        extractTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        extractTimeoutRunnable = null
+    }
+
+    // ---- Controls ----
 
     private fun togglePlayPause() {
-        if (isPlaying) {
-            runVideoCommand("v.pause();")
-            isPlaying = false
-            playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+        if (usingExoPlayer) {
+            val player = exoPlayer ?: return
+            if (player.isPlaying) {
+                player.pause()
+                isPlaying = false
+                playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+            } else {
+                player.play()
+                isPlaying = true
+                playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+            }
         } else {
-            runVideoCommand("v.play();")
-            isPlaying = true
-            playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+            // WebView fallback — try JS, then simulate click
+            runWebViewVideoCommand(if (isPlaying) "v.pause();" else "v.play();")
+            isPlaying = !isPlaying
+            playPauseBtn.setImageResource(
+                if (isPlaying) android.R.drawable.ic_media_pause
+                else android.R.drawable.ic_media_play
+            )
         }
     }
 
     private fun skipVideo(seconds: Int) {
-        runVideoCommand("v.currentTime += $seconds;")
+        if (usingExoPlayer) {
+            val player = exoPlayer ?: return
+            player.seekTo(player.currentPosition + seconds * 1000L)
+        } else {
+            runWebViewVideoCommand("v.currentTime += $seconds;")
+        }
     }
 
     private fun seekVideo(progressValue: Int) {
-        runVideoCommand("if(v.duration) v.currentTime = v.duration * ($progressValue / 1000.0);")
-    }
-
-    private fun startProgressUpdater() {
-        stopProgressUpdater()
-        progressRunnable = object : Runnable {
-            override fun run() {
-                if (isSeeking) {
-                    handler.postDelayed(this, 1000)
-                    return
-                }
-                playerView.evaluateJavascript("""
-                    (function(){
-                        var findVideo = function() {
-                            var v = document.querySelector('video');
-                            if(v) return v;
-                            var iframes = document.querySelectorAll('iframe');
-                            for(var i=0;i<iframes.length;i++){
-                                try {
-                                    var fv = iframes[i].contentDocument.querySelector('video');
-                                    if(fv) return fv;
-                                } catch(e){}
-                            }
-                            return null;
-                        };
-                        var v = findVideo();
-                        if(v && v.duration) {
-                            return JSON.stringify({
-                                current: v.currentTime,
-                                duration: v.duration,
-                                paused: v.paused
-                            });
-                        }
-                        return 'null';
-                    })();
-                """.trimIndent()) { result ->
-                    try {
-                        val cleaned = result.trim('"').replace("\\\"", "\"")
-                        if (cleaned != "null") {
-                            val json = org.json.JSONObject(cleaned)
-                            val current = json.getDouble("current")
-                            val duration = json.getDouble("duration")
-                            val paused = json.getBoolean("paused")
-
-                            handler.post {
-                                if (duration > 0) {
-                                    videoSeekBar.progress = ((current / duration) * 1000).toInt()
-                                }
-                                timeText.text = "${'$'}{formatTime(current.toInt())} / ${'$'}{formatTime(duration.toInt())}"
-
-                                if (paused && isPlaying) {
-                                    isPlaying = false
-                                    playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
-                                } else if (!paused && !isPlaying) {
-                                    isPlaying = true
-                                    playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
-                                }
-                            }
-                        }
-                    } catch (_: Exception) { }
-                }
-                handler.postDelayed(this, 1000)
+        if (usingExoPlayer) {
+            val player = exoPlayer ?: return
+            if (player.duration > 0) {
+                player.seekTo((player.duration * progressValue / 1000L))
             }
+        } else {
+            runWebViewVideoCommand("if(v.duration) v.currentTime = v.duration * ($progressValue / 1000.0);")
         }
-        handler.postDelayed(progressRunnable!!, 2000)
-    }
-
-    private fun stopProgressUpdater() {
-        progressRunnable?.let { handler.removeCallbacks(it) }
-        progressRunnable = null
-    }
-
-    private fun formatTime(totalSeconds: Int): String {
-        val hrs = totalSeconds / 3600
-        val mins = (totalSeconds % 3600) / 60
-        val secs = totalSeconds % 60
-        return if (hrs > 0) String.format("%d:%02d:%02d", hrs, mins, secs)
-        else String.format("%d:%02d", mins, secs)
-    }
-
-    // --- Video check: reload until video is detected ---
-    private fun startVideoCheckTimer() {
-        cancelVideoCheckTimer()
-        videoCheckRunnable = object : Runnable {
-            override fun run() {
-                val self = this
-                playerView.evaluateJavascript("""
-                    (function(){
-                        var v = document.querySelector('video');
-                        if(v && v.readyState >= 2 && !v.paused) return 'playing';
-                        if(v && v.readyState >= 1) return 'loaded';
-                        var iframes = document.querySelectorAll('iframe');
-                        if(iframes.length > 0) return 'has-iframe';
-                        return 'empty';
-                    })();
-                """.trimIndent()) { result ->
-                    val status = result.trim('"')
-                    handler.post {
-                        when (status) {
-                            "playing" -> {
-                                reloadAttempts = 0
-                                cancelVideoCheckTimer()
-                            }
-                            "loaded", "has-iframe" -> {
-                                simulateTapOnCenter()
-                                handler.postDelayed(self, VIDEO_CHECK_INTERVAL_MS)
-                            }
-                            else -> {
-                                if (reloadAttempts < MAX_RELOAD_ATTEMPTS) {
-                                    reloadAttempts++
-                                    setStatus("\u23F3 No video found, reloading (attempt $reloadAttempts)...")
-                                    reloadCurrentServer()
-                                } else {
-                                    setStatus("\u26A0\uFE0F Server not working, trying next...")
-                                    reloadAttempts = 0
-                                    tryNextServer()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        handler.postDelayed(videoCheckRunnable!!, 5000)
-    }
-
-    private fun cancelVideoCheckTimer() {
-        videoCheckRunnable?.let { handler.removeCallbacks(it) }
-        videoCheckRunnable = null
     }
 
     private fun toggleFullscreen() {
         if (isFullscreen) {
-            playerView.evaluateJavascript("""
-                (function(){
-                    if(document.exitFullscreen) document.exitFullscreen();
-                    else if(document.webkitExitFullscreen) document.webkitExitFullscreen();
-                })();
-            """.trimIndent(), null)
             exitCustomFullscreen()
         } else {
-            runVideoCommand("""
-                if(v.requestFullscreen) v.requestFullscreen();
-                else if(v.webkitRequestFullscreen) v.webkitRequestFullscreen();
-                else if(v.webkitEnterFullscreen) v.webkitEnterFullscreen();
-            """)
             enterCustomFullscreen()
         }
     }
@@ -724,7 +657,6 @@ class PlayerActivity : AppCompatActivity() {
         isFullscreen = true
         topBar.visibility = View.GONE
         statusText.visibility = View.GONE
-        // Controls stay visible — they overlay on the video via FrameLayout
         controlsContainer.visibility = View.VISIBLE
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN or
@@ -744,20 +676,169 @@ class PlayerActivity : AppCompatActivity() {
         )
     }
 
-    /**
-     * Inject the redirect guard script — inspired by Chrome extensions like
-     * "Redirect Shield Pro", "Popup Blocker (strict)", and the
-     * aetherly-embed-guard project. This intercepts:
-     *   - window.open → returns a fake window object
-     *   - location.assign / location.replace → blocks cross-origin
-     *   - anchor clicks with target=_blank/_top/_parent → cancelled
-     *   - HTMLFormElement.submit with external targets → cancelled
-     *   - HTMLAnchorElement.prototype.click → blocked if external
-     *   - setTimeout/setInterval → clears click context for delayed popups
-     *   - meta refresh tags → removed
-     *   - beforeunload/unload handlers → disabled
-     *   - MutationObserver to catch future injected redirect elements
-     */
+    // ---- Progress updater ----
+
+    private fun startProgressUpdater() {
+        stopProgressUpdater()
+        progressRunnable = object : Runnable {
+            override fun run() {
+                if (isSeeking) {
+                    handler.postDelayed(this, 1000)
+                    return
+                }
+                if (usingExoPlayer) {
+                    val player = exoPlayer
+                    if (player != null && player.duration > 0) {
+                        val current = player.currentPosition
+                        val duration = player.duration
+                        videoSeekBar.progress = ((current.toFloat() / duration) * 1000).toInt()
+                        timeText.text = "${formatTime((current / 1000).toInt())} / ${formatTime((duration / 1000).toInt())}"
+                        if (player.isPlaying && !isPlaying) {
+                            isPlaying = true
+                            playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+                        } else if (!player.isPlaying && isPlaying && player.playbackState != Player.STATE_BUFFERING) {
+                            isPlaying = false
+                            playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+                        }
+                    }
+                } else {
+                    // WebView fallback — try to read video state via JS
+                    webView.evaluateJavascript("""
+                        (function(){
+                            var v = document.querySelector('video');
+                            if(!v) {
+                                var iframes = document.querySelectorAll('iframe');
+                                for(var i=0;i<iframes.length;i++){
+                                    try { v = iframes[i].contentDocument.querySelector('video'); if(v) break; } catch(e){}
+                                }
+                            }
+                            if(v && v.duration) {
+                                return JSON.stringify({current:v.currentTime, duration:v.duration, paused:v.paused});
+                            }
+                            return 'null';
+                        })();
+                    """.trimIndent()) { result ->
+                        try {
+                            val cleaned = result.trim('"').replace("\\\"", "\"")
+                            if (cleaned != "null") {
+                                val json = org.json.JSONObject(cleaned)
+                                val current = json.getDouble("current")
+                                val duration = json.getDouble("duration")
+                                val paused = json.getBoolean("paused")
+                                handler.post {
+                                    if (duration > 0) {
+                                        videoSeekBar.progress = ((current / duration) * 1000).toInt()
+                                    }
+                                    timeText.text = "${formatTime(current.toInt())} / ${formatTime(duration.toInt())}"
+                                    if (paused && isPlaying) {
+                                        isPlaying = false
+                                        playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+                                    } else if (!paused && !isPlaying) {
+                                        isPlaying = true
+                                        playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) { }
+                    }
+                }
+                handler.postDelayed(this, 1000)
+            }
+        }
+        handler.postDelayed(progressRunnable!!, 1000)
+    }
+
+    private fun stopProgressUpdater() {
+        progressRunnable?.let { handler.removeCallbacks(it) }
+        progressRunnable = null
+    }
+
+    private fun formatTime(totalSeconds: Int): String {
+        val hrs = totalSeconds / 3600
+        val mins = (totalSeconds % 3600) / 60
+        val secs = totalSeconds % 60
+        return if (hrs > 0) String.format("%d:%02d:%02d", hrs, mins, secs)
+        else String.format("%d:%02d", mins, secs)
+    }
+
+    // ---- WebView video commands (fallback mode) ----
+
+    private fun runWebViewVideoCommand(js: String) {
+        webView.evaluateJavascript("""
+            (function(){
+                var v = document.querySelector('video');
+                if(!v) {
+                    var iframes = document.querySelectorAll('iframe');
+                    for(var i=0;i<iframes.length;i++){
+                        try { v = iframes[i].contentDocument.querySelector('video'); if(v) break; } catch(e){}
+                    }
+                }
+                if(v) { $js }
+            })();
+        """.trimIndent(), null)
+    }
+
+    // ---- Hide ALL embed UI except <video> (WebView fallback mode) ----
+
+    private fun injectHideEmbedUI(view: WebView?) {
+        view?.evaluateJavascript("""
+(function(){
+    // Hide everything except the video element
+    var style = document.createElement('style');
+    style.textContent = [
+        // Make video fill the entire viewport
+        'video { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 2147483647 !important; object-fit: contain !important; background: #000 !important; }',
+        // Hide all other elements
+        'body > *:not(video):not(script):not(style):not(link) { display: none !important; }',
+        // But show containers that HAVE a video inside them
+        'body { background: #000 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }',
+        // Hide common player UI elements
+        '.vjs-control-bar, .jw-controlbar, .jw-controls, .plyr__controls, .ytp-chrome-bottom { display: none !important; }',
+        '.vjs-big-play-button, .jw-display-icon-container, .plyr__control--overlaid, .ytp-large-play-button { display: none !important; }',
+        '[class*="overlay"], [class*="Overlay"], [class*="controls"], [class*="Controls"] { display: none !important; }',
+        '[class*="ad-"], [class*="popup"], [class*="banner"], [class*="modal"] { display: none !important; }',
+        // Show iframes that contain the video
+        'iframe { position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 2147483646 !important; border: none !important; }'
+    ].join('\n');
+    document.head.appendChild(style);
+
+    // Make parents of video visible
+    var video = document.querySelector('video');
+    if(video) {
+        var parent = video.parentElement;
+        while(parent && parent !== document.body) {
+            parent.style.cssText = 'display: block !important; position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 2147483646 !important; overflow: visible !important;';
+            parent = parent.parentElement;
+        }
+    }
+
+    // Also inject into same-origin iframes
+    try {
+        document.querySelectorAll('iframe').forEach(function(f){
+            try {
+                var fd = f.contentDocument;
+                if(fd) {
+                    var s2 = fd.createElement('style');
+                    s2.textContent = style.textContent;
+                    fd.head.appendChild(s2);
+                    var fv = fd.querySelector('video');
+                    if(fv) {
+                        var p = fv.parentElement;
+                        while(p && p !== fd.body) {
+                            p.style.cssText = 'display: block !important; position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 2147483646 !important; overflow: visible !important;';
+                            p = p.parentElement;
+                        }
+                    }
+                }
+            } catch(e){}
+        });
+    } catch(e){}
+})();
+        """.trimIndent(), null)
+    }
+
+    // ---- Redirect guard ----
+
     private fun injectRedirectGuard(view: WebView?) {
         val embedDomain = currentEmbedDomain
         view?.evaluateJavascript("""
@@ -778,7 +859,6 @@ class PlayerActivity : AppCompatActivity() {
         } catch(e) { return true; }
     }
 
-    // 1. Replace window.open with fake window (like aetherly-embed-guard)
     var fakeWin = {
         closed: false, close: function(){ this.closed = true; },
         focus: function(){}, blur: function(){}, postMessage: function(){},
@@ -809,7 +889,6 @@ class PlayerActivity : AppCompatActivity() {
     };
     window.open = function() { return fakeWin; };
 
-    // 2. Block location.assign and location.replace for external URLs
     try {
         var origAssign = location.assign.bind(location);
         var origReplace = location.replace.bind(location);
@@ -823,22 +902,18 @@ class PlayerActivity : AppCompatActivity() {
         });
     } catch(e) {}
 
-    // 3. Intercept setting location.href directly
     try {
         var loc = location;
         var origHref = Object.getOwnPropertyDescriptor(location.__proto__, 'href');
         if (origHref && origHref.set) {
             Object.defineProperty(location, 'href', {
                 get: function() { return origHref.get.call(loc); },
-                set: function(v) {
-                    if (!isExternal(v)) origHref.set.call(loc, v);
-                },
+                set: function(v) { if (!isExternal(v)) origHref.set.call(loc, v); },
                 configurable: false
             });
         }
     } catch(e) {}
 
-    // 4. Block anchor clicks to external or _blank targets
     document.addEventListener('click', function(e) {
         var el = e.target;
         while (el && el !== document) {
@@ -854,7 +929,19 @@ class PlayerActivity : AppCompatActivity() {
         }
     }, true);
 
-    // 5. Block programmatic anchor clicks
+    // Also block touch-triggered navigations
+    document.addEventListener('touchend', function(e) {
+        var el = e.target;
+        while (el && el !== document) {
+            if (el.tagName === 'A' && el.href && isExternal(el.href)) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                return false;
+            }
+            el = el.parentNode;
+        }
+    }, true);
+
     var origAnchorClick = HTMLAnchorElement.prototype.click;
     HTMLAnchorElement.prototype.click = function() {
         var t = (this.getAttribute('target') || '').toLowerCase();
@@ -863,7 +950,6 @@ class PlayerActivity : AppCompatActivity() {
         return origAnchorClick.apply(this, arguments);
     };
 
-    // 6. Block form submissions to external targets
     var origFormSubmit = HTMLFormElement.prototype.submit;
     HTMLFormElement.prototype.submit = function() {
         var t = (this.getAttribute('target') || '').toLowerCase();
@@ -873,38 +959,33 @@ class PlayerActivity : AppCompatActivity() {
         return origFormSubmit.apply(this, arguments);
     };
 
-    // 7. Block alert/confirm/prompt
     window.alert = function() {};
     window.confirm = function() { return false; };
     window.prompt = function() { return null; };
 
-    // 8. Kill onbeforeunload / onunload handlers
     window.onbeforeunload = null;
     window.onunload = null;
     Object.defineProperty(window, 'onbeforeunload', { get: function(){ return null; }, set: function(){}, configurable: false });
 
-    // 9. Remove meta refresh tags that cause redirects
     var metas = document.querySelectorAll('meta[http-equiv="refresh"]');
     metas.forEach(function(m) { m.remove(); });
 
-    // 10. Remove onclick/onmousedown on body that open popups
-    document.body.onclick = null;
-    document.body.onmousedown = null;
-    document.body.onmouseup = null;
-    document.body.onauxclick = null;
-    document.body.oncontextmenu = null;
+    if(document.body) {
+        document.body.onclick = null;
+        document.body.onmousedown = null;
+        document.body.onmouseup = null;
+        document.body.onauxclick = null;
+        document.body.oncontextmenu = null;
+    }
 
-    // 11. MutationObserver to catch future redirect/popup injections
     var observer = new MutationObserver(function(mutations) {
         mutations.forEach(function(m) {
             m.addedNodes.forEach(function(node) {
                 if (node.nodeType !== 1) return;
-                // Remove meta refresh tags
                 if (node.tagName === 'META' && node.getAttribute('http-equiv') === 'refresh') {
                     node.remove();
                     return;
                 }
-                // Remove scripts that contain redirect patterns
                 if (node.tagName === 'SCRIPT') {
                     var src = node.src || '';
                     if (isExternal(src) && (
@@ -915,7 +996,6 @@ class PlayerActivity : AppCompatActivity() {
                         return;
                     }
                 }
-                // Remove high z-index overlays that aren't video-related
                 try {
                     var st = window.getComputedStyle(node);
                     var z = parseInt(st.zIndex) || 0;
@@ -935,9 +1015,8 @@ class PlayerActivity : AppCompatActivity() {
         """.trimIndent(), null)
     }
 
-    /**
-     * Remove ad DOM elements and overlay divs
-     */
+    // ---- Ad blocker ----
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun injectAdBlocker(view: WebView?) {
         view?.evaluateJavascript("""
@@ -966,8 +1045,6 @@ class PlayerActivity : AppCompatActivity() {
             });
         } catch(e) {}
     });
-
-    // Remove high z-index positioned overlays
     var all = document.querySelectorAll('*');
     for (var i = 0; i < all.length; i++) {
         try {
@@ -982,8 +1059,6 @@ class PlayerActivity : AppCompatActivity() {
             }
         } catch(e) {}
     }
-
-    // Remove invisible iframes (tracking pixels)
     document.querySelectorAll('iframe').forEach(function(f) {
         if (f.offsetWidth <= 1 || f.offsetHeight <= 1) f.remove();
     });
@@ -991,155 +1066,11 @@ class PlayerActivity : AppCompatActivity() {
         """.trimIndent(), null)
     }
 
-    /**
-     * Hide ONLY the fake overlay play buttons that streaming sites use to
-     * hijack clicks and trigger redirects/popups. The real video player
-     * controls (control bar play/pause, progress bar, etc.) are kept intact.
-     *
-     * Fake overlays are typically:
-     *  - Large centered elements covering the entire video area
-     *  - Have onclick/onmousedown handlers that call window.open
-     *  - Are positioned absolute/fixed with high z-index on top of the video
-     */
-    private fun injectHideOriginalPlayButton(view: WebView?) {
-        view?.evaluateJavascript("""
-(function(){
-    if(window.__fakePlayHidden) return;
-    window.__fakePlayHidden = true;
+    // ---- Auto-play ----
 
-    // 1. CSS: Hide known big centered play buttons (these are the ones
-    //    streaming sites use as click-hijack targets for redirects).
-    //    We ONLY target the BIG overlay buttons, NOT the small control bar ones.
-    var style = document.createElement('style');
-    style.textContent = [
-        // VideoJS big center play button (NOT the control bar play)
-        '.vjs-big-play-button { display: none !important; }',
-        // JWPlayer big center display icon (NOT the controlbar)
-        '.jw-display-icon-container { display: none !important; }',
-        // Plyr big overlay play (NOT the bottom controls)
-        '.plyr__control--overlaid { display: none !important; }',
-        // YouTube big play
-        '.ytp-large-play-button { display: none !important; }',
-        // Generic big-play / play-overlay selectors
-        '[class*="big-play"] { display: none !important; }',
-        '[class*="play-overlay"] { display: none !important; }',
-        '[class*="play-icon-overlay"] { display: none !important; }',
-        '[class*="center-play"] { display: none !important; }',
-        '[class*="centerPlay"] { display: none !important; }'
-    ].join('\n');
-    if(document.head) document.head.appendChild(style);
-
-    // 2. JS: Find and neutralize any large centered element that looks like
-    //    a fake play button overlay (positioned, large, centered on screen)
-    function isFakeOverlay(el) {
-        try {
-            var st = window.getComputedStyle(el);
-            var pos = st.position;
-            if (pos !== 'absolute' && pos !== 'fixed') return false;
-            var w = el.offsetWidth, h = el.offsetHeight;
-            // Skip tiny elements (these are real control bar buttons)
-            if (w < 60 || h < 60) return false;
-            // Check for redirect-related event handlers
-            var onclick = el.getAttribute('onclick') || '';
-            var onmousedown = el.getAttribute('onmousedown') || '';
-            if (onclick.includes('window.open') || onmousedown.includes('window.open') ||
-                onclick.includes('location') || onmousedown.includes('location')) {
-                return true;
-            }
-            // Large high-z overlay covering the video area
-            var z = parseInt(st.zIndex) || 0;
-            if (z > 50 && w > 120 && h > 80) {
-                if (!el.querySelector('video') && el.tagName !== 'VIDEO' &&
-                    !el.classList.contains('vjs-control-bar') &&
-                    !el.classList.contains('jw-controlbar') &&
-                    !el.classList.contains('plyr__controls') &&
-                    !el.closest('.vjs-control-bar') &&
-                    !el.closest('.jw-controlbar') &&
-                    !el.closest('.plyr__controls')) {
-                    return true;
-                }
-            }
-            return false;
-        } catch(e) { return false; }
-    }
-
-    function removeFakeOverlays(doc) {
-        var all = doc.querySelectorAll('div, a, span, button');
-        for (var i = 0; i < all.length; i++) {
-            if (isFakeOverlay(all[i])) {
-                all[i].style.pointerEvents = 'none';
-                all[i].style.opacity = '0';
-                all[i].style.display = 'none';
-            }
-        }
-    }
-
-    function runAll() {
-        removeFakeOverlays(document);
-        // Also inside same-origin iframes
-        try {
-            document.querySelectorAll('iframe').forEach(function(f){
-                try {
-                    var fd = f.contentDocument;
-                    if(fd) {
-                        // Inject CSS into iframe too
-                        var s2 = fd.createElement('style');
-                        s2.textContent = style.textContent;
-                        if(fd.head) fd.head.appendChild(s2);
-                        removeFakeOverlays(fd);
-                    }
-                } catch(e){}
-            });
-        } catch(e){}
-    }
-
-    // Run immediately and on delays for dynamically injected overlays
-    runAll();
-    setTimeout(runAll, 500);
-    setTimeout(runAll, 1500);
-    setTimeout(runAll, 3000);
-    setTimeout(runAll, 5000);
-
-    // MutationObserver to catch future fake overlays
-    if (document.body) {
-        var obs = new MutationObserver(function(mutations) {
-            mutations.forEach(function(m) {
-                m.addedNodes.forEach(function(node) {
-                    if (node.nodeType === 1) {
-                        if (isFakeOverlay(node)) {
-                            node.style.pointerEvents = 'none';
-                            node.style.opacity = '0';
-                            node.style.display = 'none';
-                        }
-                        // Also check children
-                        try {
-                            var kids = node.querySelectorAll('div, a, span, button');
-                            for(var i = 0; i < kids.length; i++) {
-                                if (isFakeOverlay(kids[i])) {
-                                    kids[i].style.pointerEvents = 'none';
-                                    kids[i].style.opacity = '0';
-                                    kids[i].style.display = 'none';
-                                }
-                            }
-                        } catch(e){}
-                    }
-                });
-            });
-        });
-        obs.observe(document.body, { childList: true, subtree: true });
-    }
-})();
-        """.trimIndent(), null)
-    }
-
-    /**
-     * Auto-play: aggressively find and click play buttons, then force
-     * play on any video elements. Retries multiple times.
-     */
     private fun injectAutoPlay(view: WebView?) {
         view?.evaluateJavascript("""
 (function() {
-    // Try clicking play buttons with many selectors
     var playSelectors = [
         '.vjs-big-play-button', '.jw-icon-display', '.jw-display-icon-container',
         '[class*="play-btn"]', '[class*="play_btn"]', '[class*="playBtn"]',
@@ -1150,19 +1081,16 @@ class PlayerActivity : AppCompatActivity() {
         '[data-plyr="play"]', '.plyr__control--overlaid',
         'svg[data-icon="play"]', '.ytp-large-play-button',
         '.video-play-button', '.btn-play', '.icon-play',
-        '[class*="start"]', '[class*="Start"]',
         '.play', '#play', '.playButton', '#playButton',
         'div[role="button"]'
     ];
-    
     var clicked = false;
     for (var i = 0; i < playSelectors.length; i++) {
         try {
             var btns = document.querySelectorAll(playSelectors[i]);
             for (var j = 0; j < btns.length; j++) {
-                var btn = btns[j];
-                if (btn.offsetWidth > 0 && btn.offsetHeight > 0) {
-                    btn.click();
+                if (btns[j].offsetWidth > 0 && btns[j].offsetHeight > 0) {
+                    btns[j].click();
                     clicked = true;
                     break;
                 }
@@ -1170,40 +1098,29 @@ class PlayerActivity : AppCompatActivity() {
             if (clicked) break;
         } catch(e) {}
     }
-
-    // Force play on all video elements
     var videos = document.querySelectorAll('video');
     videos.forEach(function(v) {
         try {
             v.muted = false;
             v.autoplay = true;
             v.play().catch(function() {
-                // Some browsers require muted autoplay
                 v.muted = true;
                 v.play().catch(function(){});
             });
         } catch(e) {}
     });
-
-    // Also try to find video inside iframes (same-origin only)
     try {
-        var iframes = document.querySelectorAll('iframe');
-        iframes.forEach(function(f) {
+        document.querySelectorAll('iframe').forEach(function(f) {
             try {
                 var fdoc = f.contentDocument || f.contentWindow.document;
                 if (fdoc) {
-                    var fvideos = fdoc.querySelectorAll('video');
-                    fvideos.forEach(function(v) {
+                    fdoc.querySelectorAll('video').forEach(function(v) {
                         try {
                             v.muted = false;
                             v.autoplay = true;
-                            v.play().catch(function(){
-                                v.muted = true;
-                                v.play().catch(function(){});
-                            });
+                            v.play().catch(function(){ v.muted = true; v.play().catch(function(){}); });
                         } catch(e) {}
                     });
-                    // Click play buttons inside iframe
                     for (var i = 0; i < playSelectors.length; i++) {
                         try {
                             var btns = fdoc.querySelectorAll(playSelectors[i]);
@@ -1213,12 +1130,9 @@ class PlayerActivity : AppCompatActivity() {
                         } catch(e) {}
                     }
                 }
-            } catch(e) {} // Cross-origin iframe, skip
+            } catch(e) {}
         });
     } catch(e) {}
-    
-    // Return whether we found any video
-    return document.querySelectorAll('video').length > 0;
 })();
         """.trimIndent(), null)
     }
@@ -1228,13 +1142,11 @@ class PlayerActivity : AppCompatActivity() {
         autoPlayRunnable = Runnable {
             autoPlayRetries++
             if (autoPlayRetries <= AUTO_PLAY_MAX_RETRIES) {
-                injectAutoPlay(playerView)
-                // Also re-inject ad blocker to catch newly loaded ads
-                injectAdBlocker(playerView)
+                injectAutoPlay(webView)
+                injectAdBlocker(webView)
                 handler.postDelayed(autoPlayRunnable!!, AUTO_PLAY_RETRY_MS)
             }
         }
-        // First auto-play attempt after 1 second (give page time to render player)
         handler.postDelayed(autoPlayRunnable!!, 1000)
     }
 
@@ -1242,6 +1154,8 @@ class PlayerActivity : AppCompatActivity() {
         autoPlayRunnable?.let { handler.removeCallbacks(it) }
         autoPlayRunnable = null
     }
+
+    // ---- Server management ----
 
     private fun setupServerSpinner() {
         val serverNames = servers.map { it.name }.toTypedArray()
@@ -1267,7 +1181,11 @@ class PlayerActivity : AppCompatActivity() {
         }
         currentServerIndex = index
         reloadAttempts = 0
-        cancelVideoCheckTimer()
+        usingExoPlayer = false
+        extractedVideoUrl = null
+        releaseExoPlayer()
+        cancelExtractTimeout()
+
         serverSpinner.setSelection(index, false)
         val server = servers[index]
         setStatus("\u23F3 Loading ${server.name}...")
@@ -1277,18 +1195,23 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             server.tvUrl(tmdbId, season, episode)
         }
-
         currentEmbedDomain = try {
             Uri.parse(currentEmbedUrl).host?.lowercase() ?: ""
         } catch (_: Exception) { "" }
 
-        playerView.loadUrl(currentEmbedUrl)
+        // Reset views
+        exoPlayerView.visibility = View.GONE
+        webView.visibility = View.VISIBLE
+        isPlaying = false
+        playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+
+        webView.loadUrl(currentEmbedUrl)
     }
 
     private fun reloadCurrentServer() {
         if (currentEmbedUrl.isNotEmpty()) {
             setStatus("\u23F3 Reloading...")
-            playerView.loadUrl(currentEmbedUrl)
+            webView.loadUrl(currentEmbedUrl)
         }
     }
 
@@ -1326,6 +1249,8 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    // ---- Lifecycle ----
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (isFullscreen) {
@@ -1333,7 +1258,7 @@ class PlayerActivity : AppCompatActivity() {
                 return true
             }
             if (customView != null) {
-                playerView.webChromeClient?.onHideCustomView()
+                webView.webChromeClient?.onHideCustomView()
                 return true
             }
             finish()
@@ -1344,23 +1269,24 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        playerView.onPause()
+        webView.onPause()
+        exoPlayer?.pause()
         cancelAutoPlayTimer()
         stopProgressUpdater()
-        cancelVideoCheckTimer()
     }
 
     override fun onResume() {
         super.onResume()
-        playerView.onResume()
+        webView.onResume()
     }
 
     override fun onDestroy() {
         cancelFallbackTimer()
         cancelAutoPlayTimer()
+        cancelExtractTimeout()
         stopProgressUpdater()
-        cancelVideoCheckTimer()
-        playerView.destroy()
+        releaseExoPlayer()
+        webView.destroy()
         super.onDestroy()
     }
 }
