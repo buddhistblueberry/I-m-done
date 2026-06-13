@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -42,7 +43,9 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_EPISODE = "episode"
         private const val FALLBACK_TIMEOUT_MS = 12_000L
         private const val AUTO_PLAY_RETRY_MS = 2_000L
-        private const val AUTO_PLAY_MAX_RETRIES = 5
+        private const val AUTO_PLAY_MAX_RETRIES = 8
+        private const val VIDEO_CHECK_INTERVAL_MS = 3_000L
+        private const val MAX_RELOAD_ATTEMPTS = 3
 
         fun newIntent(
             context: Context,
@@ -73,6 +76,8 @@ class PlayerActivity : AppCompatActivity() {
     private var isPlaying = false
     private var isFullscreen = false
     private var isSeeking = false
+    private var reloadAttempts = 0
+    private var videoCheckRunnable: Runnable? = null
 
     private lateinit var playerView: WebView
     private lateinit var statusText: TextView
@@ -313,6 +318,8 @@ class PlayerActivity : AppCompatActivity() {
                     handler.post { playPauseBtn.setImageResource(android.R.drawable.ic_media_pause) }
                     // Start progress bar updater
                     startProgressUpdater()
+                    // Start video check timer (reload if no video found)
+                    startVideoCheckTimer()
                 }
 
                 override fun onReceivedError(
@@ -483,21 +490,10 @@ class PlayerActivity : AppCompatActivity() {
         loadServer(0)
     }
 
-    // JS helper that finds the video element (checks page + all same-origin iframes)
-    private val findVideoJs = """
-        (function(){
-            var v = document.querySelector('video');
-            if(v) return v;
-            var iframes = document.querySelectorAll('iframe');
-            for(var i=0;i<iframes.length;i++){
-                try {
-                    var fv = iframes[i].contentDocument.querySelector('video');
-                    if(fv) return fv;
-                } catch(e){}
-            }
-            return null;
-        })()
-    """
+    // --- Video controls ---
+    // The video is typically inside a cross-origin iframe so we can't access
+    // it directly via JS. Instead we use touch/key simulation and a JS bridge
+    // that works both for same-origin and falls back to simulation.
 
     private fun runVideoCommand(js: String) {
         playerView.evaluateJavascript("""
@@ -515,9 +511,46 @@ class PlayerActivity : AppCompatActivity() {
                     return null;
                 };
                 var v = findVideo();
-                if(v) { $js }
+                if(v) { $js return 'ok'; }
+                return 'no-video';
             })();
-        """.trimIndent(), null)
+        """.trimIndent()) { result ->
+            val r = result.trim('"')
+            if (r == "no-video") {
+                // Cross-origin iframe — fall back to simulation
+                handler.post { simulateFallbackCommand(js) }
+            }
+        }
+    }
+
+    private fun simulateFallbackCommand(js: String) {
+        when {
+            js.contains("pause") -> simulateTapOnCenter()
+            js.contains("play") -> simulateTapOnCenter()
+            js.contains("+= 10") || js.contains("+= -10") -> {
+                // Send arrow key to the WebView
+                val keyCode = if (js.contains("-10")) KeyEvent.KEYCODE_DPAD_LEFT
+                              else KeyEvent.KEYCODE_DPAD_RIGHT
+                playerView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+                playerView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+            }
+            js.contains("currentTime") -> {
+                // Seek — simulate click at proportional position
+                simulateTapOnCenter()
+            }
+        }
+    }
+
+    private fun simulateTapOnCenter() {
+        val x = playerView.width / 2f
+        val y = playerView.height / 2f
+        val downTime = android.os.SystemClock.uptimeMillis()
+        val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0)
+        val up = MotionEvent.obtain(downTime, downTime + 50, MotionEvent.ACTION_UP, x, y, 0)
+        playerView.dispatchTouchEvent(down)
+        playerView.dispatchTouchEvent(up)
+        down.recycle()
+        up.recycle()
     }
 
     private fun togglePlayPause() {
@@ -615,6 +648,57 @@ class PlayerActivity : AppCompatActivity() {
         val secs = totalSeconds % 60
         return if (hrs > 0) String.format("%d:%02d:%02d", hrs, mins, secs)
         else String.format("%d:%02d", mins, secs)
+    }
+
+    // --- Video check: reload until video is detected ---
+    private fun startVideoCheckTimer() {
+        cancelVideoCheckTimer()
+        videoCheckRunnable = object : Runnable {
+            override fun run() {
+                val self = this
+                playerView.evaluateJavascript("""
+                    (function(){
+                        var v = document.querySelector('video');
+                        if(v && v.readyState >= 2 && !v.paused) return 'playing';
+                        if(v && v.readyState >= 1) return 'loaded';
+                        var iframes = document.querySelectorAll('iframe');
+                        if(iframes.length > 0) return 'has-iframe';
+                        return 'empty';
+                    })();
+                """.trimIndent()) { result ->
+                    val status = result.trim('"')
+                    handler.post {
+                        when (status) {
+                            "playing" -> {
+                                reloadAttempts = 0
+                                cancelVideoCheckTimer()
+                            }
+                            "loaded", "has-iframe" -> {
+                                simulateTapOnCenter()
+                                handler.postDelayed(self, VIDEO_CHECK_INTERVAL_MS)
+                            }
+                            else -> {
+                                if (reloadAttempts < MAX_RELOAD_ATTEMPTS) {
+                                    reloadAttempts++
+                                    setStatus("\u23F3 No video found, reloading (attempt $reloadAttempts)...")
+                                    reloadCurrentServer()
+                                } else {
+                                    setStatus("\u26A0\uFE0F Server not working, trying next...")
+                                    reloadAttempts = 0
+                                    tryNextServer()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        handler.postDelayed(videoCheckRunnable!!, 5000)
+    }
+
+    private fun cancelVideoCheckTimer() {
+        videoCheckRunnable?.let { handler.removeCallbacks(it) }
+        videoCheckRunnable = null
     }
 
     private fun toggleFullscreen() {
@@ -1182,6 +1266,8 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
         currentServerIndex = index
+        reloadAttempts = 0
+        cancelVideoCheckTimer()
         serverSpinner.setSelection(index, false)
         val server = servers[index]
         setStatus("\u23F3 Loading ${server.name}...")
@@ -1261,6 +1347,7 @@ class PlayerActivity : AppCompatActivity() {
         playerView.onPause()
         cancelAutoPlayTimer()
         stopProgressUpdater()
+        cancelVideoCheckTimer()
     }
 
     override fun onResume() {
@@ -1272,6 +1359,7 @@ class PlayerActivity : AppCompatActivity() {
         cancelFallbackTimer()
         cancelAutoPlayTimer()
         stopProgressUpdater()
+        cancelVideoCheckTimer()
         playerView.destroy()
         super.onDestroy()
     }
