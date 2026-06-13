@@ -25,6 +25,7 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -71,6 +72,7 @@ class PlayerActivity : AppCompatActivity() {
     private var autoPlayRetries = 0
     private var isPlaying = false
     private var isFullscreen = false
+    private var isSeeking = false
 
     private lateinit var playerView: WebView
     private lateinit var statusText: TextView
@@ -80,8 +82,14 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var fullscreenContainer: FrameLayout
     private lateinit var controlBar: LinearLayout
     private lateinit var playPauseBtn: ImageButton
+    private lateinit var skipBackBtn: ImageButton
+    private lateinit var skipForwardBtn: ImageButton
     private lateinit var fullscreenBtn: ImageButton
     private lateinit var topBar: LinearLayout
+    private lateinit var videoSeekBar: SeekBar
+    private lateinit var timeText: TextView
+    private lateinit var seekRow: LinearLayout
+    private var progressRunnable: Runnable? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private var fallbackRunnable: Runnable? = null
@@ -280,6 +288,8 @@ class PlayerActivity : AppCompatActivity() {
                     pageLoadFailed = false
                     cancelAutoPlayTimer()
                     startFallbackTimer()
+                    // Inject CSS early to hide original play button before page renders
+                    injectHideOriginalPlayButton(view)
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
@@ -300,6 +310,8 @@ class PlayerActivity : AppCompatActivity() {
                     // Mark as playing once auto-play kicks in
                     isPlaying = true
                     handler.post { playPauseBtn.setImageResource(android.R.drawable.ic_media_pause) }
+                    // Start progress bar updater
+                    startProgressUpdater()
                 }
 
                 override fun onReceivedError(
@@ -360,40 +372,72 @@ class PlayerActivity : AppCompatActivity() {
         }
         root.addView(playerView)
 
-        // ---- Custom control bar below video ----
+        // ---- Progress bar (seek bar) ----
+        seekRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#1A1A1A"))
+            setPadding(24, 8, 24, 0)
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+
+        videoSeekBar = SeekBar(this).apply {
+            max = 1000
+            progress = 0
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) seekVideo(progress)
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) { isSeeking = true }
+                override fun onStopTrackingTouch(sb: SeekBar?) { isSeeking = false }
+            })
+        }
+        seekRow.addView(videoSeekBar)
+
+        timeText = TextView(this).apply {
+            setTextColor(Color.parseColor("#AAAAAA"))
+            textSize = 11f
+            text = "0:00 / 0:00"
+            setPadding(12, 0, 0, 0)
+        }
+        seekRow.addView(timeText)
+
+        root.addView(seekRow)
+
+        // ---- Control buttons row ----
         controlBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#1A1A1A"))
-            setPadding(32, 16, 32, 16)
-            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(16, 8, 16, 16)
+            gravity = android.view.Gravity.CENTER
         }
+
+        skipBackBtn = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_media_rew)
+            setBackgroundColor(Color.TRANSPARENT)
+            setColorFilter(Color.WHITE)
+            setPadding(20, 12, 20, 12)
+            setOnClickListener { skipVideo(-10) }
+        }
+        controlBar.addView(skipBackBtn)
 
         playPauseBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_media_play)
             setBackgroundColor(Color.TRANSPARENT)
             setColorFilter(Color.WHITE)
-            setPadding(24, 12, 24, 12)
+            setPadding(28, 12, 28, 12)
             setOnClickListener { togglePlayPause() }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
         }
         controlBar.addView(playPauseBtn)
 
-        // Spacer
-        controlBar.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-        })
-
-        // Server info text in control bar
-        val serverInfoText = TextView(this).apply {
-            setTextColor(Color.parseColor("#888888"))
-            textSize = 12f
-            text = "Server: ${servers.firstOrNull()?.name ?: ""}"
-            gravity = android.view.Gravity.CENTER
+        skipForwardBtn = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_media_ff)
+            setBackgroundColor(Color.TRANSPARENT)
+            setColorFilter(Color.WHITE)
+            setPadding(20, 12, 20, 12)
+            setOnClickListener { skipVideo(10) }
         }
-        controlBar.addView(serverInfoText)
+        controlBar.addView(skipForwardBtn)
 
         // Spacer
         controlBar.addView(View(this).apply {
@@ -404,12 +448,8 @@ class PlayerActivity : AppCompatActivity() {
             setImageResource(android.R.drawable.ic_menu_crop)
             setBackgroundColor(Color.TRANSPARENT)
             setColorFilter(Color.WHITE)
-            setPadding(24, 12, 24, 12)
+            setPadding(20, 12, 20, 12)
             setOnClickListener { toggleFullscreen() }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
         }
         controlBar.addView(fullscreenBtn)
 
@@ -421,48 +461,142 @@ class PlayerActivity : AppCompatActivity() {
         loadServer(0)
     }
 
-    private fun togglePlayPause() {
-        if (isPlaying) {
-            playerView.evaluateJavascript("""
-                (function(){
+    // JS helper that finds the video element (checks page + all same-origin iframes)
+    private val findVideoJs = """
+        (function(){
+            var v = document.querySelector('video');
+            if(v) return v;
+            var iframes = document.querySelectorAll('iframe');
+            for(var i=0;i<iframes.length;i++){
+                try {
+                    var fv = iframes[i].contentDocument.querySelector('video');
+                    if(fv) return fv;
+                } catch(e){}
+            }
+            return null;
+        })()
+    """
+
+    private fun runVideoCommand(js: String) {
+        playerView.evaluateJavascript("""
+            (function(){
+                var findVideo = function() {
                     var v = document.querySelector('video');
-                    if(v) { v.pause(); return 'paused'; }
-                    // Try inside iframes
+                    if(v) return v;
                     var iframes = document.querySelectorAll('iframe');
                     for(var i=0;i<iframes.length;i++){
                         try {
                             var fv = iframes[i].contentDocument.querySelector('video');
-                            if(fv) { fv.pause(); return 'paused'; }
+                            if(fv) return fv;
                         } catch(e){}
                     }
-                    return 'no-video';
-                })();
-            """.trimIndent(), null)
+                    return null;
+                };
+                var v = findVideo();
+                if(v) { $js }
+            })();
+        """.trimIndent(), null)
+    }
+
+    private fun togglePlayPause() {
+        if (isPlaying) {
+            runVideoCommand("v.pause();")
             isPlaying = false
             playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
         } else {
-            playerView.evaluateJavascript("""
-                (function(){
-                    var v = document.querySelector('video');
-                    if(v) { v.play(); return 'playing'; }
-                    var iframes = document.querySelectorAll('iframe');
-                    for(var i=0;i<iframes.length;i++){
-                        try {
-                            var fv = iframes[i].contentDocument.querySelector('video');
-                            if(fv) { fv.play(); return 'playing'; }
-                        } catch(e){}
-                    }
-                    return 'no-video';
-                })();
-            """.trimIndent(), null)
+            runVideoCommand("v.play();")
             isPlaying = true
             playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
         }
     }
 
+    private fun skipVideo(seconds: Int) {
+        runVideoCommand("v.currentTime += $seconds;")
+    }
+
+    private fun seekVideo(progressValue: Int) {
+        runVideoCommand("if(v.duration) v.currentTime = v.duration * ($progressValue / 1000.0);")
+    }
+
+    private fun startProgressUpdater() {
+        stopProgressUpdater()
+        progressRunnable = object : Runnable {
+            override fun run() {
+                if (isSeeking) {
+                    handler.postDelayed(this, 1000)
+                    return
+                }
+                playerView.evaluateJavascript("""
+                    (function(){
+                        var findVideo = function() {
+                            var v = document.querySelector('video');
+                            if(v) return v;
+                            var iframes = document.querySelectorAll('iframe');
+                            for(var i=0;i<iframes.length;i++){
+                                try {
+                                    var fv = iframes[i].contentDocument.querySelector('video');
+                                    if(fv) return fv;
+                                } catch(e){}
+                            }
+                            return null;
+                        };
+                        var v = findVideo();
+                        if(v && v.duration) {
+                            return JSON.stringify({
+                                current: v.currentTime,
+                                duration: v.duration,
+                                paused: v.paused
+                            });
+                        }
+                        return 'null';
+                    })();
+                """.trimIndent()) { result ->
+                    try {
+                        val cleaned = result.trim('"').replace("\\\"", "\"")
+                        if (cleaned != "null") {
+                            val json = org.json.JSONObject(cleaned)
+                            val current = json.getDouble("current")
+                            val duration = json.getDouble("duration")
+                            val paused = json.getBoolean("paused")
+
+                            handler.post {
+                                if (duration > 0) {
+                                    videoSeekBar.progress = ((current / duration) * 1000).toInt()
+                                }
+                                timeText.text = "${'$'}{formatTime(current.toInt())} / ${'$'}{formatTime(duration.toInt())}"
+
+                                if (paused && isPlaying) {
+                                    isPlaying = false
+                                    playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+                                } else if (!paused && !isPlaying) {
+                                    isPlaying = true
+                                    playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+                                }
+                            }
+                        }
+                    } catch (_: Exception) { }
+                }
+                handler.postDelayed(this, 1000)
+            }
+        }
+        handler.postDelayed(progressRunnable!!, 2000)
+    }
+
+    private fun stopProgressUpdater() {
+        progressRunnable?.let { handler.removeCallbacks(it) }
+        progressRunnable = null
+    }
+
+    private fun formatTime(totalSeconds: Int): String {
+        val hrs = totalSeconds / 3600
+        val mins = (totalSeconds % 3600) / 60
+        val secs = totalSeconds % 60
+        return if (hrs > 0) String.format("%d:%02d:%02d", hrs, mins, secs)
+        else String.format("%d:%02d", mins, secs)
+    }
+
     private fun toggleFullscreen() {
         if (isFullscreen) {
-            // Exit fullscreen
             playerView.evaluateJavascript("""
                 (function(){
                     if(document.exitFullscreen) document.exitFullscreen();
@@ -471,27 +605,11 @@ class PlayerActivity : AppCompatActivity() {
             """.trimIndent(), null)
             exitCustomFullscreen()
         } else {
-            // Enter fullscreen — try the video element first, then the page
-            playerView.evaluateJavascript("""
-                (function(){
-                    var v = document.querySelector('video');
-                    if(!v) {
-                        var iframes = document.querySelectorAll('iframe');
-                        for(var i=0;i<iframes.length;i++){
-                            try { v = iframes[i].contentDocument.querySelector('video'); if(v) break; } catch(e){}
-                        }
-                    }
-                    if(v) {
-                        if(v.requestFullscreen) v.requestFullscreen();
-                        else if(v.webkitRequestFullscreen) v.webkitRequestFullscreen();
-                        else if(v.webkitEnterFullscreen) v.webkitEnterFullscreen();
-                    } else {
-                        var el = document.documentElement;
-                        if(el.requestFullscreen) el.requestFullscreen();
-                        else if(el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-                    }
-                })();
-            """.trimIndent(), null)
+            runVideoCommand("""
+                if(v.requestFullscreen) v.requestFullscreen();
+                else if(v.webkitRequestFullscreen) v.webkitRequestFullscreen();
+                else if(v.webkitEnterFullscreen) v.webkitEnterFullscreen();
+            """)
             enterCustomFullscreen()
         }
     }
@@ -500,6 +618,7 @@ class PlayerActivity : AppCompatActivity() {
         isFullscreen = true
         topBar.visibility = View.GONE
         statusText.visibility = View.GONE
+        seekRow.visibility = View.GONE
         controlBar.visibility = View.GONE
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN or
@@ -511,6 +630,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun exitCustomFullscreen() {
         isFullscreen = false
         topBar.visibility = View.VISIBLE
+        seekRow.visibility = View.VISIBLE
         controlBar.visibility = View.VISIBLE
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN or
@@ -1025,6 +1145,7 @@ class PlayerActivity : AppCompatActivity() {
         super.onPause()
         playerView.onPause()
         cancelAutoPlayTimer()
+        stopProgressUpdater()
     }
 
     override fun onResume() {
@@ -1035,6 +1156,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onDestroy() {
         cancelFallbackTimer()
         cancelAutoPlayTimer()
+        stopProgressUpdater()
         playerView.destroy()
         super.onDestroy()
     }
