@@ -46,7 +46,7 @@ android {
     }
 }
 
-dependencies {
+dependencies {    implementation("org.jsoup:jsoup:1.18.1")
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.01.00")
     implementation(composeBom)
