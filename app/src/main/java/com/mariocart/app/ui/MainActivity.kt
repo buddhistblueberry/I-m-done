@@ -55,6 +55,7 @@ import com.mariocart.app.ui.theme.Red
 import com.mariocart.app.ui.theme.TextMuted
 import com.mariocart.app.ui.theme.TextPrimary
 import com.mariocart.app.ui.tv.TvScreen
+import com.mariocart.app.ui.updates.UpdatesScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +63,10 @@ class MainActivity : ComponentActivity() {
         // Launch server health check in background
         lifecycleScope.launch {
             ServerManager.initialize(this@MainActivity)
+        }
+        // Check for app updates silently in background
+        lifecycleScope.launch {
+            AutoUpdater.checkAndPrompt(this@MainActivity)
         }
         setContent {
             MarioCartTheme {
@@ -87,7 +92,7 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var showSearch by remember { mutableStateOf(false) }
 
-    val tabs = listOf("Home", "Movies", "TV Shows", "Browse")
+    val tabs = listOf("Home", "Movies", "TV Shows", "Browse", "Updates")
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
@@ -114,6 +119,7 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
                     1 -> MoviesScreen(onItemClick = onPlayContent)
                     2 -> TvScreen(onItemClick = onPlayContent)
                     3 -> BrowseScreen(onItemClick = onPlayContent)
+                    4 -> UpdatesScreen()
                 }
             }
         }
@@ -150,7 +156,6 @@ fun TopNavBar(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Logo
         Text(
             text = "\uD83C\uDF44 MARIO CART",
             color = Red,
@@ -158,9 +163,7 @@ fun TopNavBar(
             fontWeight = FontWeight.Black,
             letterSpacing = (-0.5).sp
         )
-
         Spacer(modifier = Modifier.width(8.dp))
-
         Column {
             Text(
                 text = "HIT A PIPE AND CHILL",
@@ -170,16 +173,9 @@ fun TopNavBar(
                 letterSpacing = 2.sp
             )
         }
-
         Spacer(modifier = Modifier.weight(1f))
-
-        // Search button
         IconButton(onClick = onSearchClick) {
-            Icon(
-                Icons.Default.Search,
-                contentDescription = "Search",
-                tint = TextPrimary
-            )
+            Icon(Icons.Default.Search, contentDescription = "Search", tint = TextPrimary)
         }
     }
 }
@@ -203,7 +199,7 @@ fun BottomNav(
                 label = {
                     Text(
                         text = label,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal
                     )
                 },

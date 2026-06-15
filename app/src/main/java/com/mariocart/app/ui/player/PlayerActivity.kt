@@ -106,6 +106,13 @@ class PlayerActivity : AppCompatActivity() {
     private var usingExoPlayer  = false
     private var extractedVideoUrl: String? = null
 
+    // User-control flags — prevent auto-timers fighting manual actions
+    private var userInitiatedPause  = false
+    private var playRetryRunnable: Runnable? = null
+    private var playRetryCount      = 0
+    private val PLAY_RETRY_MAX      = 3
+    private val PLAY_RETRY_DELAY_MS = 2_000L
+
     // ── Views ─────────────────────────────────────────────────────────────────
     private lateinit var webView:             WebView
     private lateinit var exoPlayerView:       PlayerView
@@ -610,7 +617,7 @@ class PlayerActivity : AppCompatActivity() {
                 tryNextServer()
             }
         }
-        handler.postDelayed(videoWatchdogRunnable!!, VIDEO_WATCHDOG_MS)
+        if (!userInitiatedPause) handler.postDelayed(videoWatchdogRunnable!!, VIDEO_WATCHDOG_MS)
     }
     private fun cancelVideoWatchdog() { videoWatchdogRunnable?.let { handler.removeCallbacks(it) }; videoWatchdogRunnable = null }
 
@@ -635,8 +642,22 @@ class PlayerActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) { if (fromUser) seekVideo(p) }
-                override fun onStartTrackingTouch(sb: SeekBar?) { isSeeking = true }
-                override fun onStopTrackingTouch(sb: SeekBar?) { isSeeking = false }
+                override fun onStartTrackingTouch(sb: SeekBar?) {
+                    isSeeking = true
+                    cancelAutoPlayTimer()
+                    cancelPlayRetryTimer()
+                }
+                override fun onStopTrackingTouch(sb: SeekBar?) {
+                    isSeeking = false
+                    if (isPlaying && !userInitiatedPause) {
+                        handler.postDelayed({
+                            if (!userInitiatedPause && !isSeeking) {
+                                simulateTapAtCenter()
+                                injectAutoPlay(webView)
+                            }
+                        }, 400L)
+                    }
+                }
             })
         }
         seekRow.addView(videoSeekBar)
@@ -684,18 +705,54 @@ class PlayerActivity : AppCompatActivity() {
     private fun togglePlayPause() {
         if (usingExoPlayer) {
             val p = exoPlayer ?: return
-            if (p.isPlaying) { p.pause(); isPlaying = false; playPauseBtn.setImageResource(android.R.drawable.ic_media_play) }
-            else             { p.play();  isPlaying = true;  playPauseBtn.setImageResource(android.R.drawable.ic_media_pause) }
+            if (p.isPlaying) {
+                userInitiatedPause = true
+                p.pause(); isPlaying = false
+                playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+            } else {
+                userInitiatedPause = false
+                p.play(); isPlaying = true
+                playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+            }
         } else {
-            runWebViewVideoCommand(if (isPlaying) "v.pause();" else "v.play();")
-            isPlaying = !isPlaying
-            playPauseBtn.setImageResource(if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play)
+            if (isPlaying) {
+                // User explicitly pausing — kill all background retry timers
+                userInitiatedPause = true
+                cancelAutoPlayTimer()
+                cancelPlayRetryTimer()
+                runWebViewVideoCommand("v.pause();")
+                isPlaying = false
+                playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+            } else {
+                // User pressing play — tap + inject, then quietly retry if needed
+                userInitiatedPause = false
+                cancelAutoPlayTimer()
+                cancelPlayRetryTimer()
+                simulateTapAtCenter()
+                injectAutoPlay(webView)
+                isPlaying = true
+                playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+                schedulePlayRetry()
+            }
         }
     }
 
     private fun skipVideo(s: Int) {
-        if (usingExoPlayer) exoPlayer?.seekTo((exoPlayer!!.currentPosition + s * 1000L))
-        else runWebViewVideoCommand("v.currentTime += $s;")
+        if (usingExoPlayer) {
+            exoPlayer?.seekTo((exoPlayer!!.currentPosition + s * 1000L))
+        } else {
+            cancelAutoPlayTimer()
+            cancelPlayRetryTimer()
+            runWebViewVideoCommand("v.currentTime += $s;")
+            if (isPlaying && !userInitiatedPause) {
+                handler.postDelayed({
+                    if (!userInitiatedPause && !isSeeking) {
+                        simulateTapAtCenter()
+                        injectAutoPlay(webView)
+                    }
+                }, 600L)
+            }
+        }
     }
 
     private fun seekVideo(pv: Int) {
@@ -727,8 +784,8 @@ class PlayerActivity : AppCompatActivity() {
                     if (p != null && p.duration > 0) {
                         videoSeekBar.progress = ((p.currentPosition.toFloat() / p.duration) * 1000).toInt()
                         timeText.text = "${formatTime((p.currentPosition / 1000).toInt())} / ${formatTime((p.duration / 1000).toInt())}"
-                        if (p.isPlaying && !isPlaying) { isPlaying = true; playPauseBtn.setImageResource(android.R.drawable.ic_media_pause); cancelVideoWatchdog() }
-                        else if (!p.isPlaying && isPlaying && p.playbackState != Player.STATE_BUFFERING) { isPlaying = false; playPauseBtn.setImageResource(android.R.drawable.ic_media_play) }
+                        if (p.isPlaying && !isPlaying && !userInitiatedPause) { isPlaying = true; playPauseBtn.setImageResource(android.R.drawable.ic_media_pause); cancelVideoWatchdog() }
+                        else if (!p.isPlaying && isPlaying && !userInitiatedPause && p.playbackState != Player.STATE_BUFFERING) { isPlaying = false; playPauseBtn.setImageResource(android.R.drawable.ic_media_play) }
                     }
                 } else {
                     webView.evaluateJavascript("""
@@ -744,8 +801,8 @@ class PlayerActivity : AppCompatActivity() {
                                 handler.post {
                                     if (d > 0) videoSeekBar.progress = ((c / d) * 1000).toInt()
                                     timeText.text = "${formatTime(c.toInt())} / ${formatTime(d.toInt())}"
-                                    if (!paused && !isPlaying) { isPlaying = true; playPauseBtn.setImageResource(android.R.drawable.ic_media_pause); setStatus(""); cancelVideoWatchdog() }
-                                    else if (paused && isPlaying) { isPlaying = false; playPauseBtn.setImageResource(android.R.drawable.ic_media_play) }
+                                    if (!paused && !isPlaying && !userInitiatedPause) { isPlaying = true; playPauseBtn.setImageResource(android.R.drawable.ic_media_pause); setStatus(""); cancelVideoWatchdog() }
+                                    else if (paused && isPlaying && !isSeeking && !userInitiatedPause) { isPlaying = false; playPauseBtn.setImageResource(android.R.drawable.ic_media_play) }
                                 }
                             }
                         } catch (_: Exception) {}
@@ -846,11 +903,11 @@ try{document.querySelectorAll('iframe').forEach(function(f){try{var fd=f.content
         cancelAutoPlayTimer()
         autoPlayRunnable = object : Runnable {
             override fun run() {
+                if (userInitiatedPause) return  // never override an explicit user pause
                 autoPlayRetries++
                 if (autoPlayRetries <= AUTO_PLAY_MAX_RETRIES) {
                     injectAutoPlay(webView)
                     injectAdBlocker(webView)
-                    // Also dispatch a real touch at center — works on cross-origin iframes
                     simulateTapAtCenter()
                     handler.postDelayed(this, AUTO_PLAY_RETRY_MS)
                 }
@@ -859,6 +916,42 @@ try{document.querySelectorAll('iframe').forEach(function(f){try{var fd=f.content
         handler.postDelayed(autoPlayRunnable!!, if (immediate) 400L else AUTO_PLAY_RETRY_MS)
     }
     private fun cancelAutoPlayTimer() { autoPlayRunnable?.let { handler.removeCallbacks(it) }; autoPlayRunnable = null }
+
+    /** Retry play up to PLAY_RETRY_MAX times — no server switch, no interference. */
+    private fun schedulePlayRetry() {
+        cancelPlayRetryTimer()
+        playRetryCount = 0
+        playRetryRunnable = object : Runnable {
+            override fun run() {
+                if (usingExoPlayer || userInitiatedPause) return
+                val jsCheck = "(function(){var v=document.querySelector('video');if(!v){var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++){try{v=fs[i].contentDocument.querySelector('video');if(v)break;}catch(e){}}}if(v&&!v.paused&&v.currentTime>0)return 'playing';return 'not_playing';})();"
+                webView.evaluateJavascript(jsCheck) { result ->
+                    handler.post {
+                        if (userInitiatedPause) return@post
+                        if (result.trim('"') == "playing") {
+                            isPlaying = true
+                            playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+                            setStatus("")
+                            return@post
+                        }
+                        if (playRetryCount < PLAY_RETRY_MAX) {
+                            playRetryCount++
+                            setStatus("Retrying play ($playRetryCount/$PLAY_RETRY_MAX)…")
+                            simulateTapAtCenter()
+                            injectAutoPlay(webView)
+                            handler.postDelayed(playRetryRunnable!!, PLAY_RETRY_DELAY_MS)
+                        } else {
+                            isPlaying = false
+                            playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+                            setStatus("Tap the video to start playback")
+                        }
+                    }
+                }
+            }
+        }
+        handler.postDelayed(playRetryRunnable!!, PLAY_RETRY_DELAY_MS)
+    }
+    private fun cancelPlayRetryTimer() { playRetryRunnable?.let { handler.removeCallbacks(it) }; playRetryRunnable = null }
 
     // ── Server management ─────────────────────────────────────────────────────
     private fun setupServerSpinner() {
@@ -876,6 +969,7 @@ try{document.querySelectorAll('iframe').forEach(function(f){try{var fd=f.content
         currentServerIndex = index
         sameServerBlockReloads = 0; blockedBeforeReload = false
         usingExoPlayer = false; extractedVideoUrl = null
+        userInitiatedPause = false; cancelPlayRetryTimer()
         releaseExoPlayer(); cancelExtractTimeout(); cancelVideoWatchdog()
 
         serverSpinner.setSelection(index, false)
@@ -922,10 +1016,10 @@ try{document.querySelectorAll('iframe').forEach(function(f){try{var fd=f.content
         }
         return super.onKeyDown(keyCode, event)
     }
-    override fun onPause() { super.onPause(); webView.onPause(); exoPlayer?.pause(); cancelAutoPlayTimer(); stopProgressUpdater() }
+    override fun onPause() { super.onPause(); webView.onPause(); exoPlayer?.pause(); cancelAutoPlayTimer(); cancelPlayRetryTimer(); stopProgressUpdater() }
     override fun onResume() { super.onResume(); webView.onResume() }
     override fun onDestroy() {
-        cancelFallbackTimer(); cancelAutoPlayTimer(); cancelExtractTimeout()
+        cancelFallbackTimer(); cancelAutoPlayTimer(); cancelPlayRetryTimer(); cancelExtractTimeout()
         cancelVideoWatchdog(); stopProgressUpdater(); releaseExoPlayer(); webView.destroy()
         super.onDestroy()
     }

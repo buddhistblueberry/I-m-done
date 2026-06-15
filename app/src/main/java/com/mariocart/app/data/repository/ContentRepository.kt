@@ -12,47 +12,41 @@ class ContentRepository {
     private val api = ApiClient.tmdbApi
     private val key = BuildConfig.TMDB_API_KEY
 
-    // ---- Streaming Servers — expanded list for maximum coverage ----
+    // ---- Streaming Servers ----
+    // Tier 1 — confirmed working (200/301 on HEAD probe)
     val streamingServers: List<StreamingServer> = listOf(
-        // Tier 1 — most reliable
-        StreamingServer("VidSrc", "https://vidsrc.to/embed"),
-        StreamingServer("VidSrc Pro", "https://vidsrc.pro/embed"),
-        StreamingServer("VidSrc.me", "https://vidsrc.me/embed"),
-        StreamingServer("VidLink", "https://vidlink.pro/embed"),
-        StreamingServer("AutoEmbed", "https://autoembed.cc/embed"),
+        StreamingServer("VidSrc",       "https://vidsrc.to/embed"),
+        StreamingServer("VidSrc.me",    "https://vidsrc.me/embed"),
+        StreamingServer("VidSrc Pro",   "https://vidsrc.pro/embed"),
+        StreamingServer("VidSrc.dev",   "https://vidsrc.dev/embed"),
+        StreamingServer("VidSrc.in",    "https://vidsrc.in/embed"),
         // Tier 2 — solid alternates
-        StreamingServer("2Embed", "https://2embed.to/embed"),
-        StreamingServer("Embed.su", "https://embed.su/embed"),
+        StreamingServer("AutoEmbed",    "https://autoembed.cc/embed"),
+        StreamingServer("2Embed",       "https://2embed.to/embed"),
+        StreamingServer("Embed.su",     "https://embed.su/embed"),
         StreamingServer("SmashyStream", "https://smashystream.com/embed"),
-        StreamingServer("MoviesAPI", "https://moviesapi.club/embed"),
-        StreamingServer("SuperEmbed", "https://superembed.stream/embed"),
+        StreamingServer("MoviesAPI",    "https://moviesapi.club/embed"),
+        StreamingServer("SuperEmbed",   "https://superembed.stream/embed"),
         // Tier 3 — extra fallbacks
-        StreamingServer("EmbedSito", "https://embedsito.com/embed"),
-        StreamingServer("MultiEmbed", "https://multiembed.mov/embed"),
-        StreamingServer("NontonGo", "https://www.nontongo.win/embed"),
-        StreamingServer("FlixHQ", "https://flixhq.to/embed"),
-        StreamingServer("RiveStream", "https://rivestream.live/embed"),
+        StreamingServer("EmbedSito",    "https://embedsito.com/embed"),
+        StreamingServer("MultiEmbed",   "https://multiembed.mov/embed"),
+        StreamingServer("NontonGo",     "https://www.nontongo.win/embed"),
+        StreamingServer("RiveStream",   "https://rivestream.live/embed"),
+        StreamingServer("VidLink",      "https://vidlink.pro/embed"),
         // Tier 4 — additional sources
-        StreamingServer("VidSrc.xyz", "https://vidsrc.xyz/embed"),
-        StreamingServer("VidSrc.in", "https://vidsrc.in/embed"),
-        StreamingServer("VidSrc.cc", "https://vidsrc.cc/v2/embed"),
-        StreamingServer("VidSrc.net", "https://vidsrc.net/embed"),
-        StreamingServer("VidBinge", "https://vidbinge.dev/embed"),
-        StreamingServer("Flix2Day", "https://flix2day.to/embed"),
-        StreamingServer("Movie-Web", "https://movie-web.app/embed"),
-        StreamingServer("PrimeWire", "https://primewire.mx/embed"),
-        StreamingServer("GoMovies", "https://gomovies.sx/embed"),
-        StreamingServer("YesMovies", "https://yesmovies.ag/embed"),
-        StreamingServer("FMovies", "https://fmovies.ps/embed"),
-        StreamingServer("BFlixz", "https://bflixz.to/embed"),
-        StreamingServer("HiMovies", "https://himovies.sx/embed"),
-        StreamingServer("CineZone", "https://cinezone.to/embed"),
-        StreamingServer("Zoechip", "https://zoechip.cc/embed"),
-        StreamingServer("SFlix", "https://sflix.to/embed"),
-        StreamingServer("Showbox", "https://showbox.media/embed"),
-        StreamingServer("LookMovie", "https://lookmovie2.to/embed"),
-        StreamingServer("AniWave", "https://aniwave.to/embed"),
-        StreamingServer("123Movies", "https://w4.123moviesfree.net/embed"),
+        StreamingServer("VidSrc.xyz",   "https://vidsrc.xyz/embed"),
+        StreamingServer("VidSrc.cc",    "https://vidsrc.cc/v2/embed"),
+        StreamingServer("VidSrc.net",   "https://vidsrc.net/embed"),
+        StreamingServer("VidBinge",     "https://vidbinge.dev/embed"),
+        StreamingServer("Flix2Day",     "https://flix2day.to/embed"),
+        StreamingServer("GoMovies",     "https://gomovies.sx/embed"),
+        StreamingServer("BFlixz",       "https://bflixz.to/embed"),
+        StreamingServer("HiMovies",     "https://himovies.sx/embed"),
+        StreamingServer("CineZone",     "https://cinezone.to/embed"),
+        StreamingServer("Zoechip",      "https://zoechip.cc/embed"),
+        StreamingServer("SFlix",        "https://sflix.to/embed"),
+        StreamingServer("LookMovie",    "https://lookmovie2.to/embed"),
+        StreamingServer("123Movies",    "https://w4.123moviesfree.net/embed"),
     )
 
     // ---- TMDB Content ----

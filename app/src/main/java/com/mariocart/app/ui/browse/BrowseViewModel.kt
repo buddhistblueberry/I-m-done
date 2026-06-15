@@ -25,6 +25,9 @@ class BrowseViewModel : ViewModel() {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
 
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error
+
     private var page = 1
 
     init {
@@ -33,15 +36,22 @@ class BrowseViewModel : ViewModel() {
 
     fun loadGenre(genre: Genre?, type: String = "movie") {
         _selectedGenre.value = genre
+        _error.value = null
         page = 1
         viewModelScope.launch {
             _isLoading.value = true
-            _items.value = repo.discover(
-                type = genre?.type ?: type,
-                genreId = genre?.id?.takeIf { it.isNotEmpty() },
-                page = 1
-            )
-            _isLoading.value = false
+            try {
+                _items.value = repo.discover(
+                    type = genre?.type ?: type,
+                    genreId = genre?.id?.takeIf { it.isNotEmpty() },
+                    page = 1
+                )
+            } catch (e: Exception) {
+                _error.value = "Couldn't load content. Check your connection."
+                _items.value = emptyList()
+            } finally {
+                _isLoading.value = false
+            }
         }
     }
 
@@ -50,16 +60,21 @@ class BrowseViewModel : ViewModel() {
             loadMutex.withLock {
                 if (_isLoading.value) return@withLock
                 _isLoading.value = true
-                val genre = _selectedGenre.value
-                page++
-                val existing = _items.value.map { it.id }.toSet()
-                val more = repo.discover(
-                    type = genre?.type ?: "movie",
-                    genreId = genre?.id?.takeIf { it.isNotEmpty() },
-                    page = page
-                ).filter { it.id !in existing }
-                _items.value = _items.value + more
-                _isLoading.value = false
+                try {
+                    val genre = _selectedGenre.value
+                    page++
+                    val existing = _items.value.map { it.id }.toSet()
+                    val more = repo.discover(
+                        type = genre?.type ?: "movie",
+                        genreId = genre?.id?.takeIf { it.isNotEmpty() },
+                        page = page
+                    ).filter { it.id !in existing }
+                    _items.value = _items.value + more
+                } catch (e: Exception) {
+                    _error.value = "Couldn't load more content."
+                } finally {
+                    _isLoading.value = false
+                }
             }
         }
     }
