@@ -1,5 +1,6 @@
 package com.mariocart.app.ui.player
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -14,6 +15,12 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -37,14 +44,12 @@ import androidx.media3.ui.PlayerView
 import com.mariocart.app.data.model.StreamingServer
 import com.mariocart.app.data.server.ServerManager
 import com.mariocart.app.data.server.ServerTester
-import com.mariocart.app.data.server.StreamExtractor
 import kotlinx.coroutines.launch
 import java.io.File
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerActivity : AppCompatActivity() {
 
-    // ── Companion ─────────────────────────────────────────────────────────────
     companion object {
         private const val EXTRA_TMDB_ID = "tmdb_id"
         private const val EXTRA_TYPE    = "type"
@@ -52,11 +57,39 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_SEASON  = "season"
         private const val EXTRA_EPISODE = "episode"
 
-        // Minimum video duration — skip anything shorter than 5 minutes
-        private const val MIN_DURATION_MS = 5 * 60 * 1000L
+        // Skip any stream shorter than 5 minutes — it's an ad or clip, not real content
+        private const val MIN_DURATION_MS       = 5 * 60 * 1000L
+        private const val EXTRACT_TIMEOUT_MS    = 18_000L
+        private const val PAGE_LOAD_TIMEOUT_MS  = 12_000L
+        private const val MAX_BLOCK_RELOADS     = 3
 
-        // How long to wait for the extractor to find a stream URL
-        private const val EXTRACT_TIMEOUT_MS = 20_000L
+        val AUTO_PLAY_JS = """
+(function(){
+  function tryPlay(v){try{v.muted=false;v.volume=1;var p=v.play();if(p&&p.catch)p.catch(function(){v.muted=true;v.play();});}catch(e){}}
+  var vids=document.querySelectorAll('video');
+  for(var i=0;i<vids.length;i++){tryPlay(vids[i]);}
+  var frames=document.querySelectorAll('iframe');
+  for(var j=0;j<frames.length;j++){
+    try{var fv=frames[j].contentDocument.querySelectorAll('video');
+    for(var k=0;k<fv.length;k++){tryPlay(fv[k]);}}catch(e){}
+  }
+  var origOpen=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(method,url){
+    if(url&&(url.indexOf('.m3u8')>=0||url.indexOf('.mp4')>=0||url.indexOf('.ts')>=0)){
+      try{Android.onVideoPlaying(url);}catch(e){}
+    }
+    return origOpen.apply(this,arguments);
+  };
+  var origFetch=window.fetch;
+  window.fetch=function(input){
+    var url=typeof input==='string'?input:(input&&input.url)||'';
+    if(url&&(url.indexOf('.m3u8')>=0||url.indexOf('.mp4')>=0)){
+      try{Android.onVideoPlaying(url);}catch(e){}
+    }
+    return origFetch.apply(this,arguments);
+  };
+})();
+""".trimIndent()
 
         fun newIntent(
             context: Context,
@@ -83,9 +116,13 @@ class PlayerActivity : AppCompatActivity() {
     private var episode = 1
     private var title = ""
     private var currentEmbedUrl = ""
+    private var currentEmbedDomain = ""
 
     // ── Extraction state ──────────────────────────────────────────────────────
     private var extractedVideoUrl: String? = null
+    private var blockReloadCount = 0
+    private var blockedBeforeReload = false
+    private var pageLoadFailed = false
 
     // ── Player state ──────────────────────────────────────────────────────────
     private var exoPlayer: ExoPlayer? = null
@@ -98,6 +135,7 @@ class PlayerActivity : AppCompatActivity() {
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private lateinit var playerView: PlayerView
+    private lateinit var hiddenWebView: WebView
     private lateinit var loadingOverlay: FrameLayout
     private lateinit var loadingTitle: TextView
     private lateinit var loadingStatus: TextView
@@ -118,16 +156,51 @@ class PlayerActivity : AppCompatActivity() {
     // ── Runnables / handler ───────────────────────────────────────────────────
     private val handler = Handler(Looper.getMainLooper())
     private var extractTimeoutRunnable: Runnable? = null
+    private var pageLoadTimeoutRunnable: Runnable? = null
     private var autoHideRunnable: Runnable? = null
     private var dotsRunnable: Runnable? = null
     private var progressRunnable: Runnable? = null
     private var dotsCount = 0
+
+    // ── Ad / video URL detection ──────────────────────────────────────────────
+    private val videoExtensions = listOf(".m3u8", ".mp4", ".webm", ".ts")
+
+    // Comprehensive ad-network blocklist — all requests to these domains are
+    // silently dropped at the WebView network level before they ever load.
+    private val adDomains = listOf(
+        "doubleclick","googlesyndication","adservice","adnxs","outbrain","taboola",
+        "revcontent","mgid","propellerads","popcash","popads","trafficjunky","exoclick",
+        "juicyads","adsterra","hilltopads","eroadvertising","pushground","mondiad",
+        "bidvertiser","yieldmo","ad-maven","admaven","adcash","adfly","shorte.st",
+        "pubmatic","openx","appnexus","indexexchange","casalemedia","rubiconproject",
+        "criteo","teads","carbon","ethicalads","buysellads","pagead2","amazon-adsystem",
+        "a-ads","clickadu","popunder","adspyglass","ssp.adkernel","ads.yahoo",
+        "advertising.com","media.net","primis.tech","vidazoo","connatix","undertone",
+        "sonobi","sharethrough","triplelift","33across","smartadserver","smaato",
+        "bidswitch","emxdgt","sovrn","lijit","contextweb","conversantmedia",
+        "demdex","adsafeprotected","moatads","adsystem","adform","yandex.ru/an",
+        "adtech.de","eyeota","bluekai","krxd","trustarc","onetrust","quantserve",
+        "scorecardresearch","comscore","newrelic","hotjar","fullstory","mixpanel"
+    )
+
+    private fun isAdUrl(url: String): Boolean {
+        return try {
+            val host = Uri.parse(url).host?.lowercase() ?: return false
+            adDomains.any { host.contains(it) }
+        } catch (_: Exception) { false }
+    }
+
+    private fun isVideoUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return videoExtensions.any { lower.contains(it) } && !isAdUrl(url)
+    }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN
             or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -143,6 +216,7 @@ class PlayerActivity : AppCompatActivity() {
         episode     = intent.getIntExtra(EXTRA_EPISODE, 1)
 
         buildLayout()
+        setupHiddenWebView()
         setupPlayerViewTap()
         initServersAndPlay()
     }
@@ -151,38 +225,33 @@ class PlayerActivity : AppCompatActivity() {
     private fun buildLayout() {
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+            layoutParams = ViewGroup.LayoutParams(MATCH, MATCH)
         }
+
+        // Fully transparent WebView — used only to run JS and intercept stream URLs.
+        // Sites detect a 0×0 viewport and refuse to start playback, so it must be
+        // full-size even though the user never sees it.
+        hiddenWebView = WebView(this).apply {
+            alpha = 0f
+            layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
+        }
+        root.addView(hiddenWebView)
 
         playerView = PlayerView(this).apply {
             useController = false
             setBackgroundColor(Color.BLACK)
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+            layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         }
         root.addView(playerView)
 
-        // Loading overlay
         loadingOverlay = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+            layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         }
         val loadingCenter = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            )
+            layoutParams = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER)
         }
         loadingTitle = TextView(this).apply {
             text = title
@@ -230,10 +299,7 @@ class PlayerActivity : AppCompatActivity() {
         val overlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+            layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         }
 
         val topScrim = View(this).apply {
@@ -241,9 +307,7 @@ class PlayerActivity : AppCompatActivity() {
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 intArrayOf(Color.parseColor("#CC000000"), Color.TRANSPARENT)
             )
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(80)
-            )
+            layoutParams = LinearLayout.LayoutParams(MATCH, dp(80))
         }
         overlay.addView(topScrim)
 
@@ -251,11 +315,9 @@ class PlayerActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(8), 0, dp(16), 0)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-            (layoutParams as LinearLayout.LayoutParams).topMargin = -dp(80)
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).also {
+                it.topMargin = -dp(80)
+            }
         }
         val backBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_media_previous)
@@ -270,7 +332,7 @@ class PlayerActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
             textSize = 16f
             maxLines = 1
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
             setPadding(dp(8), 0, dp(8), 0)
         }
         topBar.addView(titleLabel)
@@ -286,9 +348,7 @@ class PlayerActivity : AppCompatActivity() {
         overlay.addView(topBar)
 
         overlay.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
-            )
+            layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
         })
 
         val bottomScrim = View(this).apply {
@@ -296,9 +356,7 @@ class PlayerActivity : AppCompatActivity() {
                 GradientDrawable.Orientation.BOTTOM_TOP,
                 intArrayOf(Color.parseColor("#CC000000"), Color.TRANSPARENT)
             )
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(120)
-            )
+            layoutParams = LinearLayout.LayoutParams(MATCH, dp(120))
         }
         overlay.addView(bottomScrim)
 
@@ -306,22 +364,20 @@ class PlayerActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), 0, dp(16), 0)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-            (layoutParams as LinearLayout.LayoutParams).topMargin = -dp(120)
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).also {
+                it.topMargin = -dp(120)
+            }
         }
         seekBar = SeekBar(this).apply {
             max = 1000
             progressDrawable?.setTint(Color.WHITE)
             thumb?.setTint(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                    if (fromUser) exoPlayer?.let { player ->
-                        val dur = player.duration
-                        if (dur > 0) player.seekTo((p.toLong() * dur) / 1000L)
+                    if (fromUser) exoPlayer?.let { pl ->
+                        val dur = pl.duration
+                        if (dur > 0) pl.seekTo((p.toLong() * dur) / 1000L)
                     }
                 }
                 override fun onStartTrackingTouch(sb: SeekBar?) { isSeeking = true; cancelAutoHide() }
@@ -342,10 +398,7 @@ class PlayerActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(4), dp(8), dp(20))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
         }
         rewindBtn = iconBtn(android.R.drawable.ic_media_rew) { seekRelative(-10_000L) }
         bottomBar.addView(rewindBtn)
@@ -356,11 +409,7 @@ class PlayerActivity : AppCompatActivity() {
         bottomBar.addView(playPauseBtn)
         forwardBtn = iconBtn(android.R.drawable.ic_media_ff) { seekRelative(10_000L) }
         bottomBar.addView(forwardBtn)
-
-        bottomBar.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-        })
-
+        bottomBar.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
         qualityBtn = TextView(this).apply {
             text = "Auto"
             setTextColor(Color.WHITE)
@@ -373,6 +422,90 @@ class PlayerActivity : AppCompatActivity() {
         overlay.addView(bottomBar)
 
         return overlay
+    }
+
+    // ── Hidden WebView — intercepts stream URLs from embed pages ──────────────
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupHiddenWebView() {
+        hiddenWebView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            mediaPlaybackRequiresUserGesture = false
+            userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        }
+        hiddenWebView.addJavascriptInterface(JsBridge(), "Android")
+        hiddenWebView.webViewClient = object : WebViewClient() {
+
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val host = request.url.host?.lowercase() ?: ""
+                // Block ad network domains entirely — never navigate to them
+                if (adDomains.any { host.contains(it) }) return true
+                // Block cross-origin main-frame redirects (popup / redirect hijacking)
+                if (request.isForMainFrame && host.isNotEmpty()
+                    && host != currentEmbedDomain
+                    && !host.endsWith(".$currentEmbedDomain")) {
+                    handleBlockEvent()
+                    return true
+                }
+                return false
+            }
+
+            override fun shouldInterceptRequest(
+                view: WebView, request: WebResourceRequest
+            ): WebResourceResponse? {
+                val url = request.url.toString()
+                // Drop all ad network requests silently
+                if (isAdUrl(url)) return WebResourceResponse("text/plain", "UTF-8", null)
+                // Capture the first video URL we see
+                if (extractedVideoUrl == null && isVideoUrl(url)) {
+                    extractedVideoUrl = url
+                    handler.post { onVideoUrlFound(url) }
+                }
+                return null
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                cancelPageLoadTimeout()
+                if (pageLoadFailed) return
+                view?.evaluateJavascript(AUTO_PLAY_JS, null)
+            }
+
+            override fun onReceivedError(
+                view: WebView?, request: WebResourceRequest?,
+                error: android.webkit.WebResourceError?
+            ) {
+                if (request?.isForMainFrame == true) {
+                    pageLoadFailed = true
+                    ServerManager.markServerDead(servers.getOrNull(currentServerIndex)?.name ?: "")
+                    handler.post { tryNextServer() }
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?, request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                if (request?.isForMainFrame == true) {
+                    val code = errorResponse?.statusCode ?: 0
+                    if (code == 404 || code >= 500) {
+                        pageLoadFailed = true
+                        ServerManager.markServerDead(servers.getOrNull(currentServerIndex)?.name ?: "")
+                        handler.post { tryNextServer() }
+                    }
+                }
+            }
+        }
+    }
+
+    inner class JsBridge {
+        @JavascriptInterface
+        fun onVideoPlaying(url: String) {
+            if (extractedVideoUrl == null && isVideoUrl(url)) {
+                extractedVideoUrl = url
+                handler.post { onVideoUrlFound(url) }
+            }
+        }
     }
 
     // ── Initialization ────────────────────────────────────────────────────────
@@ -394,46 +527,66 @@ class PlayerActivity : AppCompatActivity() {
         }
         currentServerIndex = index
         extractedVideoUrl = null
+        blockReloadCount = 0
+        blockedBeforeReload = false
+        pageLoadFailed = false
 
         releaseExoPlayer()
         cancelExtractTimeout()
+        cancelPageLoadTimeout()
+        hiddenWebView.stopLoading()
 
         val server = servers[index]
         currentEmbedUrl = if (contentType == "movie") server.movieUrl(tmdbId)
                           else server.tvUrl(tmdbId, season, episode)
+        currentEmbedDomain = try { Uri.parse(currentEmbedUrl).host?.lowercase() ?: "" }
+                             catch (_: Exception) { "" }
 
         setLoadingStatus("Trying ${server.name}…")
         hideError()
-
+        startPageLoadTimeout()
         startExtractTimeout()
-
-        // Use direct HTTP extraction — no WebView needed
-        lifecycleScope.launch {
-            val videoUrl = StreamExtractor.extract(currentEmbedUrl)
-            if (videoUrl != null && extractedVideoUrl == null) {
-                extractedVideoUrl = videoUrl
-                handler.post { onVideoUrlFound(videoUrl) }
-            } else if (videoUrl == null) {
-                // Extractor found nothing for this server — move on
-                handler.post {
-                    ServerManager.markServerDead(server.name)
-                    tryNextServer()
-                }
-            }
-        }
+        hiddenWebView.loadUrl(currentEmbedUrl)
     }
 
     private fun tryNextServer() {
-        cancelExtractTimeout()
         val next = currentServerIndex + 1
         if (next < servers.size) loadServer(next)
         else showError("All sources tried.\nTap SOURCE to pick manually.")
     }
 
+    private fun reloadCurrentServer() {
+        extractedVideoUrl = null
+        pageLoadFailed = false
+        cancelExtractTimeout()
+        startPageLoadTimeout()
+        startExtractTimeout()
+        hiddenWebView.loadUrl(currentEmbedUrl)
+    }
+
+    private fun handleBlockEvent() {
+        blockReloadCount++
+        if (blockReloadCount > MAX_BLOCK_RELOADS) {
+            blockReloadCount = 0
+            handler.post { tryNextServer() }
+        } else {
+            blockedBeforeReload = true
+            handler.postDelayed({ reloadCurrentServer() }, 300L)
+        }
+    }
+
     // ── URL found → start ExoPlayer ───────────────────────────────────────────
     private fun onVideoUrlFound(videoUrl: String) {
         cancelExtractTimeout()
+        cancelPageLoadTimeout()
         ServerManager.markServerSuccess(servers.getOrNull(currentServerIndex)?.name ?: "")
+
+        // Silence the WebView — stop its audio before ExoPlayer takes over
+        hiddenWebView.evaluateJavascript(
+            "document.querySelectorAll('video,audio').forEach(function(v){try{v.pause();v.src='';}catch(e){}});",
+            null
+        )
+        handler.postDelayed({ hiddenWebView.loadUrl("about:blank") }, 400L)
 
         val player = ExoPlayer.Builder(this).build()
         exoPlayer = player
@@ -443,9 +596,7 @@ class PlayerActivity : AppCompatActivity() {
         val httpDsf = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
             .setAllowCrossProtocolRedirects(true)
-            .setDefaultRequestProperties(
-                mapOf("Referer" to currentEmbedUrl, "Origin" to embedHost)
-            )
+            .setDefaultRequestProperties(mapOf("Referer" to currentEmbedUrl, "Origin" to embedHost))
 
         @Suppress("DEPRECATION")
         val cache = SimpleCache(
@@ -471,16 +622,14 @@ class PlayerActivity : AppCompatActivity() {
 
         if (selectedMaxHeight != Int.MAX_VALUE) {
             player.trackSelectionParameters = player.trackSelectionParameters
-                .buildUpon()
-                .setMaxVideoSize(Int.MAX_VALUE, selectedMaxHeight)
-                .build()
+                .buildUpon().setMaxVideoSize(Int.MAX_VALUE, selectedMaxHeight).build()
         }
 
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_READY -> {
-                        // Skip videos shorter than 5 minutes — likely an ad/clip, not the real content
+                        // Skip clips shorter than 5 minutes — they're ads or trailers
                         val dur = player.duration
                         if (dur in 1L until MIN_DURATION_MS) {
                             setLoadingStatus("Clip too short, trying next source…")
@@ -556,23 +705,18 @@ class PlayerActivity : AppCompatActivity() {
     private fun togglePlayPause() {
         val player = exoPlayer ?: return
         if (player.isPlaying) {
-            player.pause()
-            userInitiatedPause = true
-            isPlaying = false
+            player.pause(); userInitiatedPause = true; isPlaying = false
             playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
         } else {
-            player.play()
-            userInitiatedPause = false
-            isPlaying = true
+            player.play(); userInitiatedPause = false; isPlaying = true
             playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
         }
         scheduleAutoHide()
     }
 
     private fun seekRelative(offsetMs: Long) {
-        exoPlayer?.let { player ->
-            val pos = (player.currentPosition + offsetMs).coerceAtLeast(0L)
-            player.seekTo(pos)
+        exoPlayer?.let { pl ->
+            pl.seekTo((pl.currentPosition + offsetMs).coerceAtLeast(0L))
             scheduleAutoHide()
         }
     }
@@ -580,9 +724,9 @@ class PlayerActivity : AppCompatActivity() {
     private fun startProgressUpdater() {
         progressRunnable = object : Runnable {
             override fun run() {
-                val player = exoPlayer ?: return
-                val pos = player.currentPosition
-                val dur = player.duration
+                val pl = exoPlayer ?: return
+                val pos = pl.currentPosition
+                val dur = pl.duration
                 if (!isSeeking && dur > 0) {
                     seekBar.progress = ((pos * 1000L) / dur).toInt()
                     timeLabel.text = "${formatMs(pos)} / ${formatMs(dur)}"
@@ -613,11 +757,8 @@ class PlayerActivity : AppCompatActivity() {
             selectedMaxHeight = heights[idx]
             qualityBtn.text = labels[idx]
             exoPlayer?.trackSelectionParameters = exoPlayer!!.trackSelectionParameters
-                .buildUpon()
-                .setMaxVideoSize(Int.MAX_VALUE, heights[idx])
-                .build()
-            dialog.dismiss()
-            scheduleAutoHide()
+                .buildUpon().setMaxVideoSize(Int.MAX_VALUE, heights[idx]).build()
+            dialog.dismiss(); scheduleAutoHide()
         })
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         dialog.setOnDismissListener { scheduleAutoHide() }
@@ -658,15 +799,13 @@ class PlayerActivity : AppCompatActivity() {
             setPadding(0, dp(16), 0, dp(8))
             minimumWidth = dp(280)
         }
-        val titleView = TextView(this).apply {
+        wrapper.addView(TextView(this).apply {
             text = title
             setTextColor(Color.parseColor("#AAAAAA"))
             textSize = 11f
             letterSpacing = 0.15f
             setPadding(dp(20), 0, dp(20), dp(12))
-        }
-        wrapper.addView(titleView)
-
+        })
         val list = ListView(this).apply {
             adapter = object : ArrayAdapter<String>(this@PlayerActivity,
                 android.R.layout.simple_list_item_1, items) {
@@ -688,10 +827,8 @@ class PlayerActivity : AppCompatActivity() {
         return wrapper
     }
 
-    // ── Loading UI helpers ────────────────────────────────────────────────────
-    private fun setLoadingStatus(msg: String) = handler.post {
-        loadingStatus.text = msg
-    }
+    // ── Loading UI ────────────────────────────────────────────────────────────
+    private fun setLoadingStatus(msg: String) = handler.post { loadingStatus.text = msg }
 
     private fun showError(msg: String) = handler.post {
         stopDotsAnimation()
@@ -727,7 +864,7 @@ class PlayerActivity : AppCompatActivity() {
         dotsRunnable = null
     }
 
-    // ── Extract timeout ───────────────────────────────────────────────────────
+    // ── Timeouts ──────────────────────────────────────────────────────────────
     private fun startExtractTimeout() {
         cancelExtractTimeout()
         extractTimeoutRunnable = Runnable {
@@ -744,11 +881,27 @@ class PlayerActivity : AppCompatActivity() {
         extractTimeoutRunnable = null
     }
 
+    private fun startPageLoadTimeout() {
+        cancelPageLoadTimeout()
+        pageLoadTimeoutRunnable = Runnable {
+            if (!pageLoadFailed && extractedVideoUrl == null) {
+                pageLoadFailed = true
+                ServerManager.markServerDead(servers.getOrNull(currentServerIndex)?.name ?: "")
+                tryNextServer()
+            }
+        }
+        handler.postDelayed(pageLoadTimeoutRunnable!!, PAGE_LOAD_TIMEOUT_MS)
+    }
+
+    private fun cancelPageLoadTimeout() {
+        pageLoadTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        pageLoadTimeoutRunnable = null
+    }
+
     // ── ExoPlayer release ─────────────────────────────────────────────────────
     private fun releaseExoPlayer() {
         stopProgressUpdater()
-        exoPlayer?.release()
-        exoPlayer = null
+        exoPlayer?.release(); exoPlayer = null
         try { videoCache?.release(); videoCache = null } catch (_: Exception) {}
         try { File(cacheDir, "exo_cache").deleteRecursively() } catch (_: Exception) {}
         isPlaying = false
@@ -764,10 +917,12 @@ class PlayerActivity : AppCompatActivity() {
         super.onPause()
         exoPlayer?.pause()
         stopProgressUpdater()
+        hiddenWebView.onPause()
     }
 
     override fun onResume() {
         super.onResume()
+        hiddenWebView.onResume()
         if (isPlaying && !userInitiatedPause) {
             exoPlayer?.play()
             startProgressUpdater()
@@ -776,34 +931,35 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         cancelExtractTimeout()
+        cancelPageLoadTimeout()
         cancelAutoHide()
         stopDotsAnimation()
         releaseExoPlayer()
+        hiddenWebView.destroy()
         super.onDestroy()
     }
 
     // ── Utilities ─────────────────────────────────────────────────────────────
+    private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+    private val WRAP  = ViewGroup.LayoutParams.WRAP_CONTENT
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun formatMs(ms: Long): String {
-        val s = ms / 1000L
-        val m = s / 60L
-        val h = m / 60L
+        val s = ms / 1000L; val m = s / 60L; val h = m / 60L
         return if (h > 0) "%d:%02d:%02d".format(h, m % 60, s % 60)
                else       "%d:%02d".format(m, s % 60)
     }
 
-    private fun iconBtn(resId: Int, onClick: () -> Unit): ImageButton =
-        ImageButton(this).apply {
-            setImageResource(resId)
-            setBackgroundColor(Color.TRANSPARENT)
-            setColorFilter(Color.WHITE)
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-            setOnClickListener { onClick() }
-        }
+    private fun iconBtn(resId: Int, onClick: () -> Unit) = ImageButton(this).apply {
+        setImageResource(resId)
+        setBackgroundColor(Color.TRANSPARENT)
+        setColorFilter(Color.WHITE)
+        setPadding(dp(16), dp(12), dp(16), dp(12))
+        setOnClickListener { onClick() }
+    }
 
     private fun roundedBg(color: Int, radiusPx: Int) = GradientDrawable().apply {
-        setColor(color)
-        cornerRadius = radiusPx.toFloat()
+        setColor(color); cornerRadius = radiusPx.toFloat()
     }
 }
