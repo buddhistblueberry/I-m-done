@@ -43,7 +43,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mariocart.app.data.model.TmdbItem
-import com.mariocart.app.ui.browse.BrowseScreen
 import com.mariocart.app.ui.home.HomeScreen
 import com.mariocart.app.ui.movies.MoviesScreen
 import com.mariocart.app.ui.player.PlayerActivity
@@ -55,19 +54,12 @@ import com.mariocart.app.ui.theme.Red
 import com.mariocart.app.ui.theme.TextMuted
 import com.mariocart.app.ui.theme.TextPrimary
 import com.mariocart.app.ui.tv.TvScreen
-import com.mariocart.app.ui.updates.UpdatesScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Launch server health check in background
-        lifecycleScope.launch {
-            ServerManager.initialize(this@MainActivity)
-        }
-        // Check for app updates silently in background
-        lifecycleScope.launch {
-            AutoUpdater.checkAndPrompt(this@MainActivity)
-        }
+        lifecycleScope.launch { ServerManager.initialize(this@MainActivity) }
+        lifecycleScope.launch { AutoUpdater.checkAndPrompt(this@MainActivity) }
         setContent {
             MarioCartTheme {
                 MainApp(
@@ -91,8 +83,9 @@ class MainActivity : ComponentActivity() {
 fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var showSearch by remember { mutableStateOf(false) }
+    var searchInitialGenre by remember { mutableStateOf<String?>(null) }
 
-    val tabs = listOf("Home", "Movies", "TV Shows", "Browse", "Updates")
+    val tabs = listOf("Home", "Movies", "TV Shows")
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
@@ -102,7 +95,10 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
                     selectedTab = selectedTab,
                     tabs = tabs,
                     onTabSelected = { selectedTab = it },
-                    onSearchClick = { showSearch = true }
+                    onSearchClick = {
+                        searchInitialGenre = null
+                        showSearch = true
+                    }
                 )
             },
             bottomBar = {
@@ -115,16 +111,19 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
         ) { padding ->
             Box(modifier = Modifier.padding(padding)) {
                 when (selectedTab) {
-                    0 -> HomeScreen(onItemClick = onPlayContent)
+                    0 -> HomeScreen(
+                        onItemClick = onPlayContent,
+                        onSearchWithGenre = { genreId ->
+                            searchInitialGenre = genreId
+                            showSearch = true
+                        }
+                    )
                     1 -> MoviesScreen(onItemClick = onPlayContent)
                     2 -> TvScreen(onItemClick = onPlayContent)
-                    3 -> BrowseScreen(onItemClick = onPlayContent)
-                    4 -> UpdatesScreen()
                 }
             }
         }
 
-        // Search overlay
         AnimatedVisibility(
             visible = showSearch,
             enter = fadeIn(),
@@ -132,7 +131,11 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
         ) {
             SearchScreen(
                 onItemClick = onPlayContent,
-                onClose = { showSearch = false }
+                onClose = {
+                    showSearch = false
+                    searchInitialGenre = null
+                },
+                initialGenre = searchInitialGenre
             )
         }
     }
