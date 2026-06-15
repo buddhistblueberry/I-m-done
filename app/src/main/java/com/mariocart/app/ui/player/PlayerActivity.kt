@@ -540,14 +540,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // ── Quality picker ────────────────────────────────────────────────────────
-    private fun showQualityPicker() {
-        val labels  = arrayOf("Auto", "1080p", "720p", "480p", "360p")
-        val heights = intArrayOf(Int.MAX_VALUE, 1080, 720, 480, 360)
-        cancelAutoHide()
-        val dialog = Dialog(this, android.R.style.Theme_Material_Dialog_NoActionBar)
-               
-        dialog.setContentView(buildPickerDialog("Quality", labels) { idx ->
-                dialog.setContentView(buildPickerDialog("Quality", labels) { idx ->
+            dialog.setContentView(buildPickerDialog("Quality", labels) { idx ->
             selectedMaxHeight = heights[idx]
             qualityBtn.text = labels[idx]
             exoPlayer?.let { player ->
