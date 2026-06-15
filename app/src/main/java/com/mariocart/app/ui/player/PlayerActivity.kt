@@ -209,6 +209,8 @@ class PlayerActivity : AppCompatActivity() {
                 setStatus("")
                 cancelFallbackTimer()
                 cancelVideoWatchdog()
+                cancelAutoPlayTimer()
+                cancelPlayRetryTimer()
                 // Video confirmed playing — remember this server, hide spinner
                 ServerManager.markServerSuccess(servers.getOrNull(currentServerIndex)?.name ?: "")
                 hideLoadingOverlay()
@@ -609,9 +611,27 @@ class PlayerActivity : AppCompatActivity() {
     private fun startVideoWatchdog() {
         cancelVideoWatchdog()
         videoWatchdogRunnable = Runnable {
-            if (!isPlaying && !usingExoPlayer) {
-                setStatus("⚠️ No video — trying next server…")
-                tryNextServer()
+            if (isPlaying || usingExoPlayer) return@Runnable
+            // Check if a video element exists and is actively loading/buffering
+            // If so, give it more time instead of switching servers prematurely
+            webView.evaluateJavascript("""
+(function(){
+var v=document.querySelector('video');
+if(!v){var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++){try{v=fs[i].contentDocument.querySelector('video');if(v)break;}catch(e){}}}
+if(v&&(v.readyState>0||v.networkState===2))return 'loading';
+return 'none';
+})();
+            """.trimIndent()) { result ->
+                handler.post {
+                    if (isPlaying || usingExoPlayer) return@post
+                    if (result?.trim('"') == "loading") {
+                        // Video is buffering — extend the watchdog, don't switch yet
+                        if (!userInitiatedPause) handler.postDelayed(videoWatchdogRunnable!!, VIDEO_WATCHDOG_MS)
+                    } else {
+                        setStatus("⚠️ No video — trying next server…")
+                        tryNextServer()
+                    }
+                }
             }
         }
         if (!userInitiatedPause) handler.postDelayed(videoWatchdogRunnable!!, VIDEO_WATCHDOG_MS)
@@ -900,7 +920,7 @@ try{document.querySelectorAll('iframe').forEach(function(f){try{var fd=f.content
         cancelAutoPlayTimer()
         autoPlayRunnable = object : Runnable {
             override fun run() {
-                if (userInitiatedPause) return  // never override an explicit user pause
+                if (userInitiatedPause || isPlaying) return  // don't interfere once video is playing
                 autoPlayRetries++
                 if (autoPlayRetries <= AUTO_PLAY_MAX_RETRIES) {
                     injectAutoPlay(webView)
