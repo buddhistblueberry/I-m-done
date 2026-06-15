@@ -1,6 +1,7 @@
 package com.mariocart.app.ui.player
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -15,20 +16,13 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.webkit.JavascriptInterface
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.widget.ArrayAdapter
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ListView
-import android.widget.ArrayAdapter
 import android.widget.SeekBar
 import android.widget.TextView
-import android.app.Dialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
@@ -41,7 +35,10 @@ import androidx.media3.ui.PlayerView
 import com.mariocart.app.data.model.StreamingServer
 import com.mariocart.app.data.server.ServerManager
 import com.mariocart.app.data.server.ServerTester
+import com.mariocart.app.data.server.StreamExtractor
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerActivity : AppCompatActivity() {
@@ -53,39 +50,8 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_SEASON  = "season"
         private const val EXTRA_EPISODE = "episode"
 
-        // Skip any stream shorter than 5 minutes — it's an ad or clip, not real content
-        private const val MIN_DURATION_MS       = 5 * 60 * 1000L
-        private const val EXTRACT_TIMEOUT_MS    = 18_000L
-        private const val PAGE_LOAD_TIMEOUT_MS  = 12_000L
-        private const val MAX_BLOCK_RELOADS     = 3
-
-        val AUTO_PLAY_JS = """
-(function(){
-  function tryPlay(v){try{v.muted=false;v.volume=1;var p=v.play();if(p&&p.catch)p.catch(function(){v.muted=true;v.play();});}catch(e){}}
-  var vids=document.querySelectorAll('video');
-  for(var i=0;i<vids.length;i++){tryPlay(vids[i]);}
-  var frames=document.querySelectorAll('iframe');
-  for(var j=0;j<frames.length;j++){
-    try{var fv=frames[j].contentDocument.querySelectorAll('video');
-    for(var k=0;k<fv.length;k++){tryPlay(fv[k]);}}catch(e){}
-  }
-  var origOpen=XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open=function(method,url){
-    if(url&&(url.indexOf('.m3u8')>=0||url.indexOf('.mp4')>=0||url.indexOf('.ts')>=0)){
-      try{Android.onVideoPlaying(url);}catch(e){}
-    }
-    return origOpen.apply(this,arguments);
-  };
-  var origFetch=window.fetch;
-  window.fetch=function(input){
-    var url=typeof input==='string'?input:(input&&input.url)||'';
-    if(url&&(url.indexOf('.m3u8')>=0||url.indexOf('.mp4')>=0)){
-      try{Android.onVideoPlaying(url);}catch(e){}
-    }
-    return origFetch.apply(this,arguments);
-  };
-})();
-""".trimIndent()
+        private const val MIN_DURATION_MS    = 5 * 60 * 1000L
+        private const val EXTRACT_TIMEOUT_MS = 20_000L
 
         fun newIntent(
             context: Context,
@@ -112,13 +78,9 @@ class PlayerActivity : AppCompatActivity() {
     private var episode = 1
     private var title = ""
     private var currentEmbedUrl = ""
-    private var currentEmbedDomain = ""
 
     // ── Extraction state ──────────────────────────────────────────────────────
-    private var extractedVideoUrl: String? = null
-    private var blockReloadCount = 0
-    private var blockedBeforeReload = false
-    private var pageLoadFailed = false
+    private var extractJob: Job? = null
 
     // ── Player state ──────────────────────────────────────────────────────────
     private var exoPlayer: ExoPlayer? = null
@@ -130,65 +92,24 @@ class PlayerActivity : AppCompatActivity() {
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private lateinit var playerView: PlayerView
-    private lateinit var hiddenWebView: WebView
     private lateinit var loadingOverlay: FrameLayout
     private lateinit var loadingTitle: TextView
     private lateinit var loadingStatus: TextView
     private lateinit var loadingDots: TextView
     private lateinit var controlsOverlay: LinearLayout
-    private lateinit var topBar: LinearLayout
     private lateinit var titleLabel: TextView
-    private lateinit var sourceBtn: TextView
     private lateinit var seekBar: SeekBar
     private lateinit var timeLabel: TextView
-    private lateinit var bottomBar: LinearLayout
     private lateinit var playPauseBtn: ImageButton
-    private lateinit var rewindBtn: ImageButton
-    private lateinit var forwardBtn: ImageButton
     private lateinit var qualityBtn: TextView
     private lateinit var errorText: TextView
 
-    // ── Runnables / handler ───────────────────────────────────────────────────
+    // ── Handler / runnables ───────────────────────────────────────────────────
     private val handler = Handler(Looper.getMainLooper())
-    private var extractTimeoutRunnable: Runnable? = null
-    private var pageLoadTimeoutRunnable: Runnable? = null
     private var autoHideRunnable: Runnable? = null
     private var dotsRunnable: Runnable? = null
     private var progressRunnable: Runnable? = null
     private var dotsCount = 0
-
-    // ── Ad / video URL detection ──────────────────────────────────────────────
-    private val videoExtensions = listOf(".m3u8", ".mp4", ".webm", ".ts")
-
-    // Comprehensive ad-network blocklist — all requests to these domains are
-    // silently dropped at the WebView network level before they ever load.
-    private val adDomains = listOf(
-        "doubleclick","googlesyndication","adservice","adnxs","outbrain","taboola",
-        "revcontent","mgid","propellerads","popcash","popads","trafficjunky","exoclick",
-        "juicyads","adsterra","hilltopads","eroadvertising","pushground","mondiad",
-        "bidvertiser","yieldmo","ad-maven","admaven","adcash","adfly","shorte.st",
-        "pubmatic","openx","appnexus","indexexchange","casalemedia","rubiconproject",
-        "criteo","teads","carbon","ethicalads","buysellads","pagead2","amazon-adsystem",
-        "a-ads","clickadu","popunder","adspyglass","ssp.adkernel","ads.yahoo",
-        "advertising.com","media.net","primis.tech","vidazoo","connatix","undertone",
-        "sonobi","sharethrough","triplelift","33across","smartadserver","smaato",
-        "bidswitch","emxdgt","sovrn","lijit","contextweb","conversantmedia",
-        "demdex","adsafeprotected","moatads","adsystem","adform","yandex.ru/an",
-        "adtech.de","eyeota","bluekai","krxd","trustarc","onetrust","quantserve",
-        "scorecardresearch","comscore","newrelic","hotjar","fullstory","mixpanel"
-    )
-
-    private fun isAdUrl(url: String): Boolean {
-        return try {
-            val host = Uri.parse(url).host?.lowercase() ?: return false
-            adDomains.any { host.contains(it) }
-        } catch (_: Exception) { false }
-    }
-
-    private fun isVideoUrl(url: String): Boolean {
-        val lower = url.lowercase()
-        return videoExtensions.any { lower.contains(it) } && !isAdUrl(url)
-    }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -211,8 +132,6 @@ class PlayerActivity : AppCompatActivity() {
         episode     = intent.getIntExtra(EXTRA_EPISODE, 1)
 
         buildLayout()
-        setupHiddenWebView()
-        setupPlayerViewTap()
         initServersAndPlay()
     }
 
@@ -223,22 +142,15 @@ class PlayerActivity : AppCompatActivity() {
             layoutParams = ViewGroup.LayoutParams(MATCH, MATCH)
         }
 
-        // Fully transparent WebView — used only to run JS and intercept stream URLs.
-        // Sites detect a 0×0 viewport and refuse to start playback, so it must be
-        // full-size even though the user never sees it.
-        hiddenWebView = WebView(this).apply {
-            alpha = 0f
-            layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
-        }
-        root.addView(hiddenWebView)
-
         playerView = PlayerView(this).apply {
             useController = false
             setBackgroundColor(Color.BLACK)
             layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
+            setOnClickListener { toggleControlsVisibility() }
         }
         root.addView(playerView)
 
+        // Loading overlay
         loadingOverlay = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
@@ -297,6 +209,7 @@ class PlayerActivity : AppCompatActivity() {
             layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         }
 
+        // Top scrim + bar
         val topScrim = View(this).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
@@ -306,13 +219,11 @@ class PlayerActivity : AppCompatActivity() {
         }
         overlay.addView(topScrim)
 
-        topBar = LinearLayout(this).apply {
+        val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(8), 0, dp(16), 0)
-            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).also {
-                it.topMargin = -dp(80)
-            }
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = -dp(80) }
         }
         val backBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_media_previous)
@@ -331,7 +242,7 @@ class PlayerActivity : AppCompatActivity() {
             setPadding(dp(8), 0, dp(8), 0)
         }
         topBar.addView(titleLabel)
-        sourceBtn = TextView(this).apply {
+        val sourceBtn = TextView(this).apply {
             text = "SOURCE"
             setTextColor(Color.WHITE)
             textSize = 11f
@@ -346,6 +257,7 @@ class PlayerActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
         })
 
+        // Bottom scrim + seek + buttons
         val bottomScrim = View(this).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.BOTTOM_TOP,
@@ -359,9 +271,7 @@ class PlayerActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), 0, dp(16), 0)
-            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).also {
-                it.topMargin = -dp(120)
-            }
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).also { it.topMargin = -dp(120) }
         }
         seekBar = SeekBar(this).apply {
             max = 1000
@@ -389,20 +299,20 @@ class PlayerActivity : AppCompatActivity() {
         seekRow.addView(timeLabel)
         overlay.addView(seekRow)
 
-        bottomBar = LinearLayout(this).apply {
+        val bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(4), dp(8), dp(20))
             layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
         }
-        rewindBtn = iconBtn(android.R.drawable.ic_media_rew) { seekRelative(-10_000L) }
+        val rewindBtn = iconBtn(android.R.drawable.ic_media_rew) { seekRelative(-10_000L) }
         bottomBar.addView(rewindBtn)
         playPauseBtn = iconBtn(android.R.drawable.ic_media_play) { togglePlayPause() }
         (playPauseBtn.layoutParams as LinearLayout.LayoutParams).apply {
             leftMargin = dp(8); rightMargin = dp(8)
         }
         bottomBar.addView(playPauseBtn)
-        forwardBtn = iconBtn(android.R.drawable.ic_media_ff) { seekRelative(10_000L) }
+        val forwardBtn = iconBtn(android.R.drawable.ic_media_ff) { seekRelative(10_000L) }
         bottomBar.addView(forwardBtn)
         bottomBar.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
         qualityBtn = TextView(this).apply {
@@ -419,90 +329,6 @@ class PlayerActivity : AppCompatActivity() {
         return overlay
     }
 
-    // ── Hidden WebView — intercepts stream URLs from embed pages ──────────────
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun setupHiddenWebView() {
-        hiddenWebView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            mediaPlaybackRequiresUserGesture = false
-            userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-        }
-        hiddenWebView.addJavascriptInterface(JsBridge(), "Android")
-        hiddenWebView.webViewClient = object : WebViewClient() {
-
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val host = request.url.host?.lowercase() ?: ""
-                // Block ad network domains entirely — never navigate to them
-                if (adDomains.any { host.contains(it) }) return true
-                // Block cross-origin main-frame redirects (popup / redirect hijacking)
-                if (request.isForMainFrame && host.isNotEmpty()
-                    && host != currentEmbedDomain
-                    && !host.endsWith(".$currentEmbedDomain")) {
-                    handleBlockEvent()
-                    return true
-                }
-                return false
-            }
-
-            override fun shouldInterceptRequest(
-                view: WebView, request: WebResourceRequest
-            ): WebResourceResponse? {
-                val url = request.url.toString()
-                // Drop all ad network requests silently
-                if (isAdUrl(url)) return WebResourceResponse("text/plain", "UTF-8", null)
-                // Capture the first video URL we see
-                if (extractedVideoUrl == null && isVideoUrl(url)) {
-                    extractedVideoUrl = url
-                    handler.post { onVideoUrlFound(url) }
-                }
-                return null
-            }
-
-            override fun onPageFinished(view: WebView?, url: String?) {
-                cancelPageLoadTimeout()
-                if (pageLoadFailed) return
-                view?.evaluateJavascript(AUTO_PLAY_JS, null)
-            }
-
-            override fun onReceivedError(
-                view: WebView?, request: WebResourceRequest?,
-                error: android.webkit.WebResourceError?
-            ) {
-                if (request?.isForMainFrame == true) {
-                    pageLoadFailed = true
-                    ServerManager.markServerDead(servers.getOrNull(currentServerIndex)?.name ?: "")
-                    handler.post { tryNextServer() }
-                }
-            }
-
-            override fun onReceivedHttpError(
-                view: WebView?, request: WebResourceRequest?,
-                errorResponse: WebResourceResponse?
-            ) {
-                if (request?.isForMainFrame == true) {
-                    val code = errorResponse?.statusCode ?: 0
-                    if (code == 404 || code >= 500) {
-                        pageLoadFailed = true
-                        ServerManager.markServerDead(servers.getOrNull(currentServerIndex)?.name ?: "")
-                        handler.post { tryNextServer() }
-                    }
-                }
-            }
-        }
-    }
-
-    inner class JsBridge {
-        @JavascriptInterface
-        fun onVideoPlaying(url: String) {
-            if (extractedVideoUrl == null && isVideoUrl(url)) {
-                extractedVideoUrl = url
-                handler.post { onVideoUrlFound(url) }
-            }
-        }
-    }
-
     // ── Initialization ────────────────────────────────────────────────────────
     private fun initServersAndPlay() {
         startDotsAnimation()
@@ -514,34 +340,34 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    // ── Server loading ────────────────────────────────────────────────────────
+    // ── Server loading — uses StreamExtractor, no WebView ─────────────────────
     private fun loadServer(index: Int) {
         if (index >= servers.size) {
             showError("No working stream found.\nTap SOURCE to pick manually.")
             return
         }
         currentServerIndex = index
-        extractedVideoUrl = null
-        blockReloadCount = 0
-        blockedBeforeReload = false
-        pageLoadFailed = false
-
+        extractJob?.cancel()
         releaseExoPlayer()
-        cancelExtractTimeout()
-        cancelPageLoadTimeout()
-        hiddenWebView.stopLoading()
 
         val server = servers[index]
         currentEmbedUrl = if (contentType == "movie") server.movieUrl(tmdbId)
                           else server.tvUrl(tmdbId, season, episode)
-        currentEmbedDomain = try { Uri.parse(currentEmbedUrl).host?.lowercase() ?: "" }
-                             catch (_: Exception) { "" }
 
         setLoadingStatus("Trying ${server.name}…")
         hideError()
-        startPageLoadTimeout()
-        startExtractTimeout()
-        hiddenWebView.loadUrl(currentEmbedUrl)
+
+        extractJob = lifecycleScope.launch {
+            val videoUrl = withTimeoutOrNull(EXTRACT_TIMEOUT_MS) {
+                StreamExtractor.extract(currentEmbedUrl)
+            }
+            if (videoUrl != null) {
+                onVideoUrlFound(videoUrl)
+            } else {
+                ServerManager.markServerDead(server.name)
+                tryNextServer()
+            }
+        }
     }
 
     private fun tryNextServer() {
@@ -550,38 +376,9 @@ class PlayerActivity : AppCompatActivity() {
         else showError("All sources tried.\nTap SOURCE to pick manually.")
     }
 
-    private fun reloadCurrentServer() {
-        extractedVideoUrl = null
-        pageLoadFailed = false
-        cancelExtractTimeout()
-        startPageLoadTimeout()
-        startExtractTimeout()
-        hiddenWebView.loadUrl(currentEmbedUrl)
-    }
-
-    private fun handleBlockEvent() {
-        blockReloadCount++
-        if (blockReloadCount > MAX_BLOCK_RELOADS) {
-            blockReloadCount = 0
-            handler.post { tryNextServer() }
-        } else {
-            blockedBeforeReload = true
-            handler.postDelayed({ reloadCurrentServer() }, 300L)
-        }
-    }
-
     // ── URL found → start ExoPlayer ───────────────────────────────────────────
     private fun onVideoUrlFound(videoUrl: String) {
-        cancelExtractTimeout()
-        cancelPageLoadTimeout()
         ServerManager.markServerSuccess(servers.getOrNull(currentServerIndex)?.name ?: "")
-
-        // Silence the WebView — stop its audio before ExoPlayer takes over
-        hiddenWebView.evaluateJavascript(
-            "document.querySelectorAll('video,audio').forEach(function(v){try{v.pause();v.src='';}catch(e){}});",
-            null
-        )
-        handler.postDelayed({ hiddenWebView.loadUrl("about:blank") }, 400L)
 
         val player = ExoPlayer.Builder(this).build()
         exoPlayer = player
@@ -612,7 +409,6 @@ class PlayerActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_READY -> {
-                        // Skip clips shorter than 5 minutes — they're ads or trailers
                         val dur = player.duration
                         if (dur in 1L until MIN_DURATION_MS) {
                             setLoadingStatus("Clip too short, trying next source…")
@@ -631,7 +427,6 @@ class PlayerActivity : AppCompatActivity() {
                         isPlaying = false
                         playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
                     }
-                    Player.STATE_BUFFERING -> {}
                     else -> {}
                 }
             }
@@ -681,10 +476,6 @@ class PlayerActivity : AppCompatActivity() {
         autoHideRunnable = null
     }
 
-    private fun setupPlayerViewTap() {
-        playerView.setOnClickListener { toggleControlsVisibility() }
-    }
-
     private fun togglePlayPause() {
         val player = exoPlayer ?: return
         if (player.isPlaying) {
@@ -730,6 +521,13 @@ class PlayerActivity : AppCompatActivity() {
         if (pos > 3_000L) handler.postDelayed({ exoPlayer?.seekTo(pos) }, 600L)
     }
 
+    // ── ExoPlayer release ─────────────────────────────────────────────────────
+    private fun releaseExoPlayer() {
+        stopProgressUpdater()
+        exoPlayer?.release(); exoPlayer = null
+        isPlaying = false
+    }
+
     // ── Quality picker ────────────────────────────────────────────────────────
     private fun showQualityPicker() {
         val labels  = arrayOf("Auto", "1080p", "720p", "480p", "360p")
@@ -764,7 +562,6 @@ class PlayerActivity : AppCompatActivity() {
         dialog.setContentView(buildPickerDialog("Select Source", serverNames) { idx ->
             if (idx != currentServerIndex) {
                 savedPositionMs = exoPlayer?.currentPosition ?: 0L
-                releaseExoPlayer()
                 showLoadingOverlay()
                 loadServer(idx)
             }
@@ -847,47 +644,6 @@ class PlayerActivity : AppCompatActivity() {
         dotsRunnable = null
     }
 
-    // ── Timeouts ──────────────────────────────────────────────────────────────
-    private fun startExtractTimeout() {
-        cancelExtractTimeout()
-        extractTimeoutRunnable = Runnable {
-            if (extractedVideoUrl == null) {
-                ServerManager.markServerDead(servers.getOrNull(currentServerIndex)?.name ?: "")
-                tryNextServer()
-            }
-        }
-        handler.postDelayed(extractTimeoutRunnable!!, EXTRACT_TIMEOUT_MS)
-    }
-
-    private fun cancelExtractTimeout() {
-        extractTimeoutRunnable?.let { handler.removeCallbacks(it) }
-        extractTimeoutRunnable = null
-    }
-
-    private fun startPageLoadTimeout() {
-        cancelPageLoadTimeout()
-        pageLoadTimeoutRunnable = Runnable {
-            if (!pageLoadFailed && extractedVideoUrl == null) {
-                pageLoadFailed = true
-                ServerManager.markServerDead(servers.getOrNull(currentServerIndex)?.name ?: "")
-                tryNextServer()
-            }
-        }
-        handler.postDelayed(pageLoadTimeoutRunnable!!, PAGE_LOAD_TIMEOUT_MS)
-    }
-
-    private fun cancelPageLoadTimeout() {
-        pageLoadTimeoutRunnable?.let { handler.removeCallbacks(it) }
-        pageLoadTimeoutRunnable = null
-    }
-
-    // ── ExoPlayer release ─────────────────────────────────────────────────────
-    private fun releaseExoPlayer() {
-        stopProgressUpdater()
-        exoPlayer?.release(); exoPlayer = null
-        isPlaying = false
-    }
-
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) { finish(); return true }
@@ -898,12 +654,10 @@ class PlayerActivity : AppCompatActivity() {
         super.onPause()
         exoPlayer?.pause()
         stopProgressUpdater()
-        hiddenWebView.onPause()
     }
 
     override fun onResume() {
         super.onResume()
-        hiddenWebView.onResume()
         if (isPlaying && !userInitiatedPause) {
             exoPlayer?.play()
             startProgressUpdater()
@@ -911,12 +665,10 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        cancelExtractTimeout()
-        cancelPageLoadTimeout()
+        extractJob?.cancel()
         cancelAutoHide()
         stopDotsAnimation()
         releaseExoPlayer()
-        hiddenWebView.destroy()
         super.onDestroy()
     }
 
