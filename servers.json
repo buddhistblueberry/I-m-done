@@ -34,4 +34,30 @@
   {"name": "LookMovie", "baseUrl": "https://lookmovie2.to/embed"},
   {"name": "AniWave", "baseUrl": "https://aniwave.to/embed"},
   {"name": "123Movies", "baseUrl": "https://w4.123moviesfree.net/embed"}
-]
+[
+  {
+    "name": "VidSrc.to",
+    "baseUrl": "https://vidsrc.to/embed"
+  },
+  {
+    "name": "VidSrc.pro",
+    "baseUrl": "https://vidsrc.pro/embed"
+  },
+  {
+    "name": "Embed.su",
+    "baseUrl": "https://embed.su/embed"
+  },
+  {
+    "name": "SmashyStream",
+    "baseUrl": "https://smashystream.com/embed"
+  },
+  {
+    "name": "VidSrc.icu",
+    "baseUrl": "https://vidsrc.icu/embed"
+  },
+  {
+    "name": "Vidlink.pro",
+    "baseUrl": "https://vidlink.pro/embed"
+  }
+  // Keep your existing servers after these for fallback
+]]
