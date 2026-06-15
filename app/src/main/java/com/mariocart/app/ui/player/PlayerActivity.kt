@@ -547,6 +547,7 @@ class PlayerActivity : AppCompatActivity() {
         val dialog = Dialog(this, android.R.style.Theme_Material_Dialog_NoActionBar)
                
         dialog.setContentView(buildPickerDialog("Quality", labels) { idx ->
+                dialog.setContentView(buildPickerDialog("Quality", labels) { idx ->
             selectedMaxHeight = heights[idx]
             qualityBtn.text = labels[idx]
             exoPlayer?.let { player ->
