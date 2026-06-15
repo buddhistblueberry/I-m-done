@@ -239,16 +239,17 @@ object ServerManager {
             val testUrl = server.movieUrl(550) // Fight Club as test
             val request = Request.Builder()
                 .url(testUrl)
-                .head()
                 .header(
                     "User-Agent",
-                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36"
+                    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
                 )
+                .header("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.5")
                 .build()
             val response = healthClient.newCall(request).execute()
             val code = response.code
             response.close()
-            code in 200..499
+            code < 500
         } catch (_: Exception) {
             false
         }
