@@ -34,9 +34,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
-import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -45,7 +42,6 @@ import com.mariocart.app.data.model.StreamingServer
 import com.mariocart.app.data.server.ServerManager
 import com.mariocart.app.data.server.ServerTester
 import kotlinx.coroutines.launch
-import java.io.File
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerActivity : AppCompatActivity() {
@@ -126,7 +122,6 @@ class PlayerActivity : AppCompatActivity() {
 
     // ── Player state ──────────────────────────────────────────────────────────
     private var exoPlayer: ExoPlayer? = null
-    private var videoCache: SimpleCache? = null
     private var isPlaying = false
     private var isSeeking = false
     private var userInitiatedPause = false
@@ -216,7 +211,6 @@ class PlayerActivity : AppCompatActivity() {
         episode     = intent.getIntExtra(EXTRA_EPISODE, 1)
 
         buildLayout()
-        initVideoCache()
         setupHiddenWebView()
         setupPlayerViewTap()
         initServersAndPlay()
@@ -425,16 +419,6 @@ class PlayerActivity : AppCompatActivity() {
         return overlay
     }
 
-    // ── Video cache — single instance for the whole activity lifetime ─────────
-    @Suppress("DEPRECATION")
-    private fun initVideoCache() {
-        if (videoCache == null) {
-            val cacheDir = File(cacheDir, "exo_cache")
-            cacheDir.mkdirs()
-            videoCache = SimpleCache(cacheDir, LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024))
-        }
-    }
-
     // ── Hidden WebView — intercepts stream URLs from embed pages ──────────────
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupHiddenWebView() {
@@ -609,16 +593,11 @@ class PlayerActivity : AppCompatActivity() {
             .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(mapOf("Referer" to currentEmbedUrl, "Origin" to embedHost))
 
-        val cacheDsf = CacheDataSource.Factory()
-            .setCache(videoCache!!)
-            .setUpstreamDataSourceFactory(httpDsf)
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-
         val mi = MediaItem.fromUri(videoUrl)
         val source = if (videoUrl.lowercase().contains(".m3u8"))
-            HlsMediaSource.Factory(cacheDsf).createMediaSource(mi)
+            HlsMediaSource.Factory(httpDsf).createMediaSource(mi)
         else
-            ProgressiveMediaSource.Factory(cacheDsf).createMediaSource(mi)
+            ProgressiveMediaSource.Factory(httpDsf).createMediaSource(mi)
 
         player.setMediaSource(source)
         player.prepare()
@@ -937,7 +916,6 @@ class PlayerActivity : AppCompatActivity() {
         cancelAutoHide()
         stopDotsAnimation()
         releaseExoPlayer()
-        try { videoCache?.release(); videoCache = null } catch (_: Exception) {}
         hiddenWebView.destroy()
         super.onDestroy()
     }
