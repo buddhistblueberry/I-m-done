@@ -216,6 +216,7 @@ class PlayerActivity : AppCompatActivity() {
         episode     = intent.getIntExtra(EXTRA_EPISODE, 1)
 
         buildLayout()
+        initVideoCache()
         setupHiddenWebView()
         setupPlayerViewTap()
         initServersAndPlay()
@@ -424,6 +425,16 @@ class PlayerActivity : AppCompatActivity() {
         return overlay
     }
 
+    // ── Video cache — single instance for the whole activity lifetime ─────────
+    @Suppress("DEPRECATION")
+    private fun initVideoCache() {
+        if (videoCache == null) {
+            val cacheDir = File(cacheDir, "exo_cache")
+            cacheDir.mkdirs()
+            videoCache = SimpleCache(cacheDir, LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024))
+        }
+    }
+
     // ── Hidden WebView — intercepts stream URLs from embed pages ──────────────
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupHiddenWebView() {
@@ -598,15 +609,8 @@ class PlayerActivity : AppCompatActivity() {
             .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(mapOf("Referer" to currentEmbedUrl, "Origin" to embedHost))
 
-        @Suppress("DEPRECATION")
-        val cache = SimpleCache(
-            File(cacheDir, "exo_cache"),
-            LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024)
-        )
-        videoCache = cache
-
         val cacheDsf = CacheDataSource.Factory()
-            .setCache(cache)
+            .setCache(videoCache!!)
             .setUpstreamDataSourceFactory(httpDsf)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
@@ -902,8 +906,6 @@ class PlayerActivity : AppCompatActivity() {
     private fun releaseExoPlayer() {
         stopProgressUpdater()
         exoPlayer?.release(); exoPlayer = null
-        try { videoCache?.release(); videoCache = null } catch (_: Exception) {}
-        try { File(cacheDir, "exo_cache").deleteRecursively() } catch (_: Exception) {}
         isPlaying = false
     }
 
@@ -935,6 +937,7 @@ class PlayerActivity : AppCompatActivity() {
         cancelAutoHide()
         stopDotsAnimation()
         releaseExoPlayer()
+        try { videoCache?.release(); videoCache = null } catch (_: Exception) {}
         hiddenWebView.destroy()
         super.onDestroy()
     }
