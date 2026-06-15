@@ -24,6 +24,14 @@ class VideoDownloadService(private val context: Context) {
 
     companion object {
         private const val TAG = "VideoDownloadService"
+
+        private var instance: VideoDownloadService? = null
+
+        fun getInstance(context: Context): VideoDownloadService {
+            return instance ?: synchronized(this) {
+                VideoDownloadService(context).also { instance = it }
+            }
+        }
     }
 
     /**
@@ -183,13 +191,4 @@ class VideoDownloadService(private val context: Context) {
         return "video_$hash.$extension"
     }
 
-    companion object Factory {
-        private var instance: VideoDownloadService? = null
-
-        fun getInstance(context: Context): VideoDownloadService {
-            return instance ?: synchronized(this) {
-                VideoDownloadService(context).also { instance = it }
-            }
-        }
-    }
 }

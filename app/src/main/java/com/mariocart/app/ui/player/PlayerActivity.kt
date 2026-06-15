@@ -162,13 +162,15 @@ class PlayerActivity : AppCompatActivity() {
         "doubleclick","googlesyndication"
     )
 
-    private fun isAdUrl(url: String): Boolean = try {
-        val lower = url.lowercase()
-        val host  = Uri.parse(url).host?.lowercase() ?: return false
-        if (adDomains.any { host.contains(it) }) return true
-        val path = Uri.parse(url).path?.lowercase() ?: ""
-        adPathPatterns.any { path.contains(it) || lower.contains(it) }
-    } catch (_: Exception) { false }
+    private fun isAdUrl(url: String): Boolean {
+        return try {
+            val lower = url.lowercase()
+            val host  = Uri.parse(url).host?.lowercase() ?: return false
+            if (adDomains.any { host.contains(it) }) return true
+            val path = Uri.parse(url).path?.lowercase() ?: ""
+            adPathPatterns.any { path.contains(it) || lower.contains(it) }
+        } catch (_: Exception) { false }
+    }
 
     private fun isVideoUrl(url: String) =
         videoExtensions.any { url.lowercase().contains(it) } && !isAdUrl(url)
@@ -550,11 +552,13 @@ class PlayerActivity : AppCompatActivity() {
         playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
 
         player.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) = when (state) {
-                Player.STATE_READY    -> { setStatus(""); startProgressUpdater() }
-                Player.STATE_ENDED    -> { isPlaying = false; playPauseBtn.setImageResource(android.R.drawable.ic_media_play) }
-                Player.STATE_BUFFERING -> setStatus("⏳ Buffering…")
-                else -> {}
+            override fun onPlaybackStateChanged(state: Int) {
+                when (state) {
+                    Player.STATE_READY    -> { setStatus(""); startProgressUpdater() }
+                    Player.STATE_ENDED    -> { isPlaying = false; playPauseBtn.setImageResource(android.R.drawable.ic_media_play) }
+                    Player.STATE_BUFFERING -> setStatus("⏳ Buffering…")
+                    else -> {}
+                }
             }
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 setStatus("⚠️ Native player failed, using embed…")
