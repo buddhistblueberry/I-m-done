@@ -58,18 +58,18 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_SEASON     = "season"
         private const val EXTRA_EPISODE    = "episode"
 
-        // How long to wait on a page before giving up and switching server
-        private const val FALLBACK_TIMEOUT_MS           = 8_000L
-        // Interval between auto-play injection retries
-        private const val AUTO_PLAY_RETRY_MS            = 1_800L
-        // Max number of auto-play retries per page load
-        private const val AUTO_PLAY_MAX_RETRIES         = 12
+        // How long to wait for a page to finish loading before giving up
+        private const val FALLBACK_TIMEOUT_MS           = 15_000L
+        // Interval between auto-play injection retries (give embed players time to init)
+        private const val AUTO_PLAY_RETRY_MS            = 10_000L
+        // Max number of auto-play retries per server before moving on
+        private const val AUTO_PLAY_MAX_RETRIES         = 5
         // How long to wait for ExoPlayer to intercept a video URL
-        private const val EXOPLAYER_EXTRACT_TIMEOUT_MS  = 10_000L
+        private const val EXOPLAYER_EXTRACT_TIMEOUT_MS  = 12_000L
         // After this many block-caused reloads on the SAME server, give up and switch
-        private const val MAX_BLOCK_RELOADS_PER_SERVER  = 5
-        // If video hasn't started within this window, switch server
-        private const val VIDEO_WATCHDOG_MS             = 12_000L
+        private const val MAX_BLOCK_RELOADS_PER_SERVER  = 3
+        // Safety-net: if somehow retries exhaust without switching, this catches it
+        private const val VIDEO_WATCHDOG_MS             = 60_000L
 
         fun newIntent(
             context: Context,
@@ -1006,15 +1006,24 @@ try{document.querySelectorAll('iframe').forEach(function(f){try{var fd=f.content
 
     private fun startAutoPlayTimer(immediate: Boolean = true) {
         cancelAutoPlayTimer()
+        if (!isPlaying && !usingExoPlayer) setStatus("Looking for video…")
         autoPlayRunnable = object : Runnable {
             override fun run() {
                 if (userInitiatedPause || isPlaying) return  // don't interfere once video is playing
                 autoPlayRetries++
                 if (autoPlayRetries <= AUTO_PLAY_MAX_RETRIES) {
+                    // Show the user which attempt we're on so they know it's still trying
+                    setStatus("Attempt ${autoPlayRetries} of ${AUTO_PLAY_MAX_RETRIES} — looking for video…")
                     injectAutoPlay(webView)
                     injectAdBlocker(webView)
                     simulateTapAtCenter()
                     handler.postDelayed(this, AUTO_PLAY_RETRY_MS)
+                } else {
+                    // All attempts exhausted — this server isn't playing anything
+                    if (!isPlaying && !usingExoPlayer) {
+                        setStatus("⚠️ No playback after ${AUTO_PLAY_MAX_RETRIES} tries — switching…")
+                        tryNextServer()
+                    }
                 }
             }
         }
