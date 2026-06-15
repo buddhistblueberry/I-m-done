@@ -27,13 +27,22 @@ object StreamExtractor {
         "exoclick", "juicyads", "adsterra", "hilltopads"
     )
 
-    private val videoPatterns = listOf(
-        Regex("""["'](?:file|src|url)["']\s*:\s*["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE),
-        Regex("""sources\s*:\s*\[.*?(https?://[^\s"']+\.m3u8)""", RegexOption.IGNORE_CASE),
-        Regex("""<source[^>]+src=["']([^"']+\.m3u8[^"']*)""", RegexOption.IGNORE_CASE),
-        Regex("""(https?://[^\s"'<>]+\.m3u8(?:\?[^\s"'<>]*)?)""", RegexOption.IGNORE_CASE),
-        Regex("""["'](?:file|src|url)["']\s*:\s*["']([^"']+\.mp4[^"']*)["']""", RegexOption.IGNORE_CASE),
-        Regex("""(https?://[^\s"'<>]+\.mp4(?:\?[^\s"'<>]*)?)""", RegexOption.IGNORE_CASE)
+        private val videoPatterns = listOf(
+        // VidSrc / common JSON players
+        Regex(""""file"\s*:\s*["']?(https?://[^"'\s]+?\.m3u8[^"'\s]*)["']?""", RegexOption.IGNORE_CASE),
+        Regex(""""src"\s*:\s*["']?(https?://[^"'\s]+?\.m3u8[^"'\s]*)["']?""", RegexOption.IGNORE_CASE),
+        Regex(""""url"\s*:\s*["']?(https?://[^"'\s]+?\.m3u8[^"'\s]*)["']?""", RegexOption.IGNORE_CASE),
+        Regex("""sources\s*:\s*\[.*?["']?(https?://[^"'\s]+?\.m3u8)""", RegexOption.IGNORE_CASE),
+        
+        // Smashy / other players
+        Regex("""master\.m3u8""", RegexOption.IGNORE_CASE),
+        Regex("""playlist\.m3u8""", RegexOption.IGNORE_CASE),
+        Regex("""<source[^>]+src=["']?(https?://[^"'\s]+?\.m3u8[^"'\s]*)""", RegexOption.IGNORE_CASE),
+        
+        // Broad fallback (catch any .m3u8/.mp4 in the page)
+        Regex("""(https?://[^\s"'<>\)]+\.m3u8(?:\?[^\s"'<>)]*)?)""", RegexOption.IGNORE_CASE),
+        Regex("""(https?://[^\s"'<>\)]+\.mp4(?:\?[^\s"'<>)]*)?)""", RegexOption.IGNORE_CASE)
+    )
     )
 
     suspend fun extract(embedUrl: String): String? = withContext(Dispatchers.IO) {
