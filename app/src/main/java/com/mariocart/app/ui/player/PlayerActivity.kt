@@ -223,7 +223,19 @@ class PlayerActivity : AppCompatActivity() {
             )
         }
 
-        // ExoPlayer surface
+        // WebView sits at the bottom of the Z-stack, full size but fully transparent.
+        // Full dimensions are required — streaming sites detect a 0×0 viewport and
+        // refuse to start playback, which means no stream URL ever gets intercepted.
+        hiddenWebView = WebView(this).apply {
+            alpha = 0f
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        root.addView(hiddenWebView)
+
+        // ExoPlayer surface — sits on top of the transparent WebView
         playerView = PlayerView(this).apply {
             useController = false
             setBackgroundColor(Color.BLACK)
@@ -233,13 +245,6 @@ class PlayerActivity : AppCompatActivity() {
             )
         }
         root.addView(playerView)
-
-        // Hidden WebView — purely for URL extraction, never visible
-        hiddenWebView = WebView(this).apply {
-            visibility = View.GONE
-            layoutParams = FrameLayout.LayoutParams(1, 1)
-        }
-        root.addView(hiddenWebView)
 
         // Loading overlay
         loadingOverlay = FrameLayout(this).apply {
@@ -619,13 +624,25 @@ class PlayerActivity : AppCompatActivity() {
         cancelPageLoadTimeout()
         ServerManager.markServerSuccess(servers.getOrNull(currentServerIndex)?.name ?: "")
 
+        // Silence the WebView immediately so its audio doesn't bleed over ExoPlayer
+        hiddenWebView.evaluateJavascript(
+            "document.querySelectorAll('video,audio').forEach(function(v){try{v.pause();v.src='';}catch(e){}});",
+            null
+        )
+        handler.postDelayed({ hiddenWebView.loadUrl("about:blank") }, 400L)
+
         val player = ExoPlayer.Builder(this).build()
         exoPlayer = player
         playerView.player = player
 
+        // Pass Referer + Origin so CDN servers don't reject the request with 403
+        val embedHost = try { "https://${Uri.parse(currentEmbedUrl).host}" } catch (_: Exception) { "" }
         val httpDsf = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
             .setAllowCrossProtocolRedirects(true)
+            .setDefaultRequestProperties(
+                mapOf("Referer" to currentEmbedUrl, "Origin" to embedHost)
+            )
 
         @Suppress("DEPRECATION")
         val cache = SimpleCache(
