@@ -35,8 +35,12 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.PlayerView
+import java.io.File
 import com.mariocart.app.data.model.StreamingServer
 import com.mariocart.app.data.server.ServerManager
 import com.mariocart.app.data.server.ServerTester
@@ -105,6 +109,7 @@ class PlayerActivity : AppCompatActivity() {
     private var isSeeking       = false
     private var usingExoPlayer  = false
     private var extractedVideoUrl: String? = null
+    private var videoCache: SimpleCache? = null
 
     // User-control flags — prevent auto-timers fighting manual actions
     private var userInitiatedPause  = false
@@ -539,16 +544,29 @@ class PlayerActivity : AppCompatActivity() {
         exoPlayer = player
         exoPlayerView.player = player
 
-        val dsf = DefaultHttpDataSource.Factory()
+        val httpDsf = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
             .setAllowCrossProtocolRedirects(true)
 
+        // Cache the stream locally — isolates playback from the WebView so
+        // redirects, popups, and ad spam can't interrupt the video once found.
+        @Suppress("DEPRECATION")
+        val cache = SimpleCache(
+            File(cacheDir, "exo_video_cache"),
+            LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024) // 512 MB max
+        )
+        videoCache = cache
+        val cacheDsf = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(httpDsf)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
         val mi = MediaItem.fromUri(videoUrl)
         if (videoUrl.lowercase().contains(".m3u8")) {
-            player.setMediaSource(HlsMediaSource.Factory(dsf).createMediaSource(mi))
+            player.setMediaSource(HlsMediaSource.Factory(cacheDsf).createMediaSource(mi))
         } else {
             player.setMediaSource(
-                androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(dsf).createMediaSource(mi)
+                androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(cacheDsf).createMediaSource(mi)
             )
         }
         player.prepare()
@@ -589,7 +607,13 @@ class PlayerActivity : AppCompatActivity() {
         startProgressUpdater()
     }
 
-    private fun releaseExoPlayer() { exoPlayer?.release(); exoPlayer = null }
+    private fun releaseExoPlayer() {
+        exoPlayer?.release(); exoPlayer = null
+        try {
+            videoCache?.release(); videoCache = null
+            File(cacheDir, "exo_video_cache").deleteRecursively()
+        } catch (_: Exception) {}
+    }
 
     // ── Timeouts / watchdog ───────────────────────────────────────────────────
     private fun startExtractTimeout() {
@@ -737,6 +761,7 @@ return 'none';
                 userInitiatedPause = true
                 cancelAutoPlayTimer()
                 cancelPlayRetryTimer()
+                cancelVideoWatchdog()
                 runWebViewVideoCommand("v.pause();")
                 isPlaying = false
                 playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
