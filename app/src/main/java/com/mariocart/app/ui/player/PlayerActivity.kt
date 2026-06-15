@@ -540,7 +540,6 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // ── Quality picker ────────────────────────────────────────────────────────
-                    // ── Quality picker ────────────────────────────────────────────────────────
     private fun showQualityPicker() {
         cancelAutoHide()
         val heights = listOf(2160, 1080, 720, 480, 360)
