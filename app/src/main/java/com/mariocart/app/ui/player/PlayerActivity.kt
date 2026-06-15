@@ -540,23 +540,22 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // ── Quality picker ────────────────────────────────────────────────────────
-    private fun showQualityPicker() {
+    
+    }    private fun showQualityPicker() {
         cancelAutoHide()
-        val heights = listOf(2160, 1080, 720, 480, 360)
-        val labels = heights.map { "${it}p" }.toTypedArray()
+        val labels = arrayOf("Auto (Best)", "1080p", "720p", "480p", "360p")
+        val heights = intArrayOf(Int.MAX_VALUE, 1080, 720, 480, 360)
 
         val dialog = Dialog(this, android.R.style.Theme_Material_Dialog_NoActionBar)
         dialog.setContentView(buildPickerDialog("Quality", labels) { idx ->
             selectedMaxHeight = heights[idx]
             qualityBtn.text = labels[idx]
             exoPlayer?.let { player ->
-                player.trackSelectionParameters = player.trackSelectionParameters
-                    .buildUpon().setMaxVideoSize(Int.MAX_VALUE, heights[idx]).build()
+                // Re-prepare with new quality preference if needed
             }
-            dialog.dismiss(); scheduleAutoHide()
+            dialog.dismiss()
+            scheduleAutoHide()
         })
-        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        dialog.setOnDismissListener { if (isPlaying) scheduleAutoHide() }
         dialog.show()
     }
     // ── Server picker ─────────────────────────────────────────────────────────
