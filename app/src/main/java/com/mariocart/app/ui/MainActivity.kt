@@ -125,7 +125,7 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
                     showSearch = false
                     searchInitialGenre = null
                 },
-                initialGenre = searchInitialGenre
+        
             )
         }
     }
