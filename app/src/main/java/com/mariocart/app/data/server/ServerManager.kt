@@ -41,10 +41,17 @@ object ServerManager {
             }
             servers = list
             Log.d(TAG, "Loaded ${servers.size} servers from $SERVERS_ASSET")
-        } catch (e: IOException) {
-            Log.e(TAG, "Could not open $SERVERS_ASSET: ${e.message}")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse $SERVERS_ASSET: ${e.message}")
+            Log.e(TAG, "Failed to load $SERVERS_ASSET, using fallback: ${e.message}")
+            servers = listOf(
+                StreamingServer("VidSrc.to", "https://vidsrc.to/embed"),
+                StreamingServer("VidSrc.me", "https://vidsrc.me/embed"),
+                StreamingServer("VidSrc2", "https://vidsrc2.to/embed"),
+                StreamingServer("VidLink", "https://vidlink.pro"),
+                StreamingServer("AutoEmbed", "https://autoembed.cc/embed"),
+                StreamingServer("SuperEmbed", "https://superembed.stream/embed"),
+                StreamingServer("MoviesAPI", "https://moviesapi.club/embed")
+            )
         }
     }
 

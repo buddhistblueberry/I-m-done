@@ -4,6 +4,9 @@ import android.net.Uri
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.JavaNetCookieJar
 import okhttp3.OkHttpClient
@@ -15,7 +18,7 @@ import java.util.concurrent.TimeUnit
 object StreamExtractor {
 
     private const val TAG = "StreamExtractor"
-    private const val TIMEOUT_S = 8L
+    private const val TIMEOUT_S = 10L
 
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
@@ -53,11 +56,9 @@ object StreamExtractor {
         Regex("""(https?://[^\s"'<>()\]]+\.m3u8(?:\?[^\s"'<>()\]]*)?)""",           RegexOption.IGNORE_CASE),
         Regex("""(https?://[^\s"'<>()\]]+\.mp4(?:\?[^\s"'<>()\]]*)?)""",            RegexOption.IGNORE_CASE),
         Regex("""["'](https?://[^"'\s]+/(?:master|index|playlist)\.m3u8[^"'\s]*)["']""",RegexOption.IGNORE_CASE),
-        Regex("""["']((?:https?://|//)[^"'\s]+(?:\.m3u8|\.mp4)[^"'\s]*)["']""", RegexOption.IGNORE_CASE),
-        Regex("""source\s*:\s*["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE),
+        Regex("""["']((?:https?://|//)[^"'\s]+(?:\.m3u8|\.mp4)[^"'\s]*)["']""",     RegexOption.IGNORE_CASE),
+        Regex("""source\s*:\s*["']([^"']+\.m3u8[^"']*)["']""",                      RegexOption.IGNORE_CASE),
     )
-
-    // ── PUBLIC: try every known direct JSON API — call this ONCE before the server loop ──
 
     suspend fun extractDirect(
         tmdbId: Int,
@@ -68,100 +69,50 @@ object StreamExtractor {
         val isMovie = contentType == "movie"
         Log.d(TAG, "extractDirect id=$tmdbId type=$contentType s=$season e=$episode")
 
-        // VidLink.pro
-        fetchJson(
-            if (isMovie) "https://vidlink.pro/api/b/movie/$tmdbId"
-            else         "https://vidlink.pro/api/b/tv/$tmdbId/$season/$episode",
-            referer = if (isMovie) "https://vidlink.pro/movie/$tmdbId"
-                      else         "https://vidlink.pro/tv/$tmdbId/$season/$episode"
-        )?.let { r ->
-            Regex(""""playlist"\s*:\s*["']([^"']+\.m3u8[^"']*)["']""").find(r)
-                ?.groupValues?.get(1)?.let { Log.d(TAG,"✅ VidLink: $it"); return@withContext it }
-            findVideoUrl(r)?.let { Log.d(TAG,"✅ VidLink: $it"); return@withContext it }
-        }
-
-        // Videasy
-        fetchJson(
-            if (isMovie) "https://player.videasy.net/api/movie/$tmdbId"
-            else         "https://player.videasy.net/api/tv/$tmdbId/$season/$episode",
-            referer = "https://player.videasy.net"
-        )?.let { r ->
-            findVideoUrl(r)?.let { Log.d(TAG,"✅ Videasy: $it"); return@withContext it }
-            Regex(""""(?:hls|stream|playlist|url)"\s*:\s*"(https?://[^"]+)"""",RegexOption.IGNORE_CASE)
-                .find(r)?.groupValues?.get(1)?.takeIf { isValidVideo(it) }
-                ?.let { Log.d(TAG,"✅ Videasy: $it"); return@withContext it }
-        }
-
-        // AutoEmbed.cc
-        for (base in listOf("https://autoembed.cc","https://autoembed.co")) {
-            fetchJson(
-                if (isMovie) "$base/api/v2/movie/$tmdbId"
-                else         "$base/api/v2/tv/$tmdbId/$season/$episode",
-                referer = base
-            )?.let { r ->
-                findVideoUrl(r)?.let { Log.d(TAG,"✅ AutoEmbed: $it"); return@withContext it }
+        val tasks = listOf(
+            // VidLink.pro
+            async {
+                val url = if (isMovie) "https://vidlink.pro/api/b/movie/$tmdbId"
+                          else         "https://vidlink.pro/api/b/tv/$tmdbId/$season/$episode"
+                val referer = if (isMovie) "https://vidlink.pro/movie/$tmdbId"
+                              else         "https://vidlink.pro/tv/$tmdbId/$season/$episode"
+                fetchJson(url, referer)?.let { r ->
+                    Regex(""""playlist"\s*:\s*["']([^"']+\.m3u8[^"']*)["']""").find(r)
+                        ?.groupValues?.get(1) ?: findVideoUrl(r)
+                }
+            },
+            // Videasy
+            async {
+                val url = if (isMovie) "https://player.videasy.net/api/movie/$tmdbId"
+                          else         "https://player.videasy.net/api/tv/$tmdbId/$season/$episode"
+                fetchJson(url, referer = "https://player.videasy.net")?.let { r ->
+                    findVideoUrl(r) ?: Regex(""""(?:hls|stream|playlist|url)"\s*:\s*"(https?://[^"]+)"""", RegexOption.IGNORE_CASE)
+                        .find(r)?.groupValues?.get(1)?.takeIf { isValidVideo(it) }
+                }
+            },
+            // AutoEmbed
+            async {
+                val url = if (isMovie) "https://autoembed.cc/api/v2/movie/$tmdbId"
+                          else         "https://autoembed.cc/api/v2/tv/$tmdbId/$season/$episode"
+                fetchJson(url, referer = "https://autoembed.cc")?.let { findVideoUrl(it) }
+            },
+            // SuperEmbed
+            async {
+                val url = if (isMovie) "https://superembed.stream/api/v2/movie/$tmdbId"
+                          else         "https://superembed.stream/api/v2/tv/$tmdbId/$season/$episode"
+                fetchJson(url, referer = "https://superembed.stream")?.let { findVideoUrl(it) }
+            },
+            // VidBinge
+            async {
+                val url = if (isMovie) "https://vidbinge.dev/api/v2/movie?id=$tmdbId"
+                          else         "https://vidbinge.dev/api/v2/tv?id=$tmdbId&s=$season&e=$episode"
+                fetchJson(url, referer = "https://vidbinge.dev")?.let { findVideoUrl(it) }
             }
-        }
+        )
 
-        // SuperEmbed
-        fetchJson(
-            if (isMovie) "https://superembed.stream/api/v2/movie/$tmdbId"
-            else         "https://superembed.stream/api/v2/tv/$tmdbId/$season/$episode",
-            referer = "https://superembed.stream"
-        )?.let { r ->
-            findVideoUrl(r)?.let { Log.d(TAG,"✅ SuperEmbed: $it"); return@withContext it }
-        }
-
-        // VidBinge
-        fetchJson(
-            if (isMovie) "https://vidbinge.dev/api/v2/movie?id=$tmdbId"
-            else         "https://vidbinge.dev/api/v2/tv?id=$tmdbId&s=$season&e=$episode",
-            referer = "https://vidbinge.dev"
-        )?.let { r ->
-            findVideoUrl(r)?.let { Log.d(TAG,"✅ VidBinge: $it"); return@withContext it }
-        }
-
-        // MoviesAPI
-        fetchJson(
-            if (isMovie) "https://moviesapi.club/api/v2/movie/$tmdbId"
-            else         "https://moviesapi.club/api/v2/tv/$tmdbId/$season/$episode",
-            referer = "https://moviesapi.club"
-        )?.let { r ->
-            findVideoUrl(r)?.let { Log.d(TAG,"✅ MoviesAPI: $it"); return@withContext it }
-        }
-
-        // embed.su
-        fetchJson(
-            if (isMovie) "https://embed.su/api/source/$tmdbId"
-            else         "https://embed.su/api/source/tv/$tmdbId/$season/$episode",
-            referer = "https://embed.su"
-        )?.let { r ->
-            findVideoUrl(r)?.let { Log.d(TAG,"✅ embed.su: $it"); return@withContext it }
-        }
-
-        // FlixEmbed
-        fetchJson(
-            if (isMovie) "https://flixembed.net/api/movie/$tmdbId"
-            else         "https://flixembed.net/api/tv/$tmdbId/$season/$episode",
-            referer = "https://flixembed.net"
-        )?.let { r ->
-            findVideoUrl(r)?.let { Log.d(TAG,"✅ FlixEmbed: $it"); return@withContext it }
-        }
-
-        // EmbedMe
-        fetchJson(
-            if (isMovie) "https://embedme.top/api/v2/movie/$tmdbId"
-            else         "https://embedme.top/api/v2/tv/$tmdbId/$season/$episode",
-            referer = "https://embedme.top"
-        )?.let { r ->
-            findVideoUrl(r)?.let { Log.d(TAG,"✅ EmbedMe: $it"); return@withContext it }
-        }
-
-        Log.d(TAG, "❌ extractDirect: no provider returned a stream")
-        null
+        // Return the first one that succeeds
+        tasks.awaitAll().firstOrNull { it != null }
     }
-
-    // ── PUBLIC: scrape a specific embed URL — used as fallback per-server ──────
 
     suspend fun extract(
         embedUrl: String,
@@ -200,8 +151,6 @@ object StreamExtractor {
         }
     }
 
-    // ── Server-specific scrapers ───────────────────────────────────────────────
-
     private fun extractVidSrcFamily(pageUrl: String): String? {
         val html = fetch(pageUrl) ?: return null
         findVideoUrl(html)?.let { return it }
@@ -218,14 +167,8 @@ object StreamExtractor {
             "$origin/ajax/v2/embed/movie?id=$dataI",
             "$origin/ajax/sources/$dataI",
             "$origin/api/source/$dataI",
-            "$origin/api/v2/source/$dataI",
-            "$origin/api/v3/source/$dataI",
             "$origin/ajax/v2/sources/$dataI",
             "$origin/ajax/v2/source/$dataI",
-            "https://vsembed.ru/ajax/embed/episode?id=$dataI",
-            "https://vsembed.ru/ajax/embed/movie?id=$dataI",
-            "https://vidsrc.me/ajax/embed/episode?id=$dataI",
-            "https://vidsrc.me/ajax/embed/movie?id=$dataI",
             "https://vidsrc2.to/ajax/embed/episode?id=$dataI",
             "https://vidsrc2.to/ajax/embed/movie?id=$dataI",
         )) {
@@ -247,8 +190,6 @@ object StreamExtractor {
                 "$origin/ajax/embed/episode?id=$dataI",
                 "$origin/ajax/embed/movie?id=$dataI",
                 "$origin/api/source/$dataI",
-                "https://vsembed.ru/ajax/embed/episode?id=$dataI",
-                "https://vsembed.ru/ajax/embed/movie?id=$dataI",
             )) {
                 fetchJson(path, referer = pageUrl)?.let { findVideoUrl(it)?.let { u -> return u } }
             }
@@ -288,8 +229,6 @@ object StreamExtractor {
         return scrapeUrl(pageUrl)
     }
 
-    // ── Generic scraper ───────────────────────────────────────────────────────
-
     private fun scrapeUrl(url: String): String? {
         val html = fetch(url) ?: return null
         findVideoUrl(html)?.let { return it }
@@ -310,8 +249,6 @@ object StreamExtractor {
         }
         return null
     }
-
-    // ── URL finders ───────────────────────────────────────────────────────────
 
     private fun findVideoUrl(html: String): String? {
         for (pattern in videoPatterns) {
@@ -340,9 +277,6 @@ object StreamExtractor {
         return null
     }
 
-    // ── HTTP helpers ──────────────────────────────────────────────────────────
-
-    // NOTE: No Sec-Fetch-* headers — they trigger Cloudflare bot detection
     private fun fetch(url: String, referer: String? = null): String? = try {
         val req = Request.Builder()
             .url(url)
@@ -372,8 +306,6 @@ object StreamExtractor {
         resp.close()
         body
     } catch (_: Exception) { null }
-
-    // ── Utilities ─────────────────────────────────────────────────────────────
 
     private fun isValidVideo(url: String): Boolean {
         if (url.isBlank() || url.length < 20) return false
