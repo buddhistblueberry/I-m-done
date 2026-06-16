@@ -18,7 +18,7 @@ object StreamExtractor {
     private const val TIMEOUT_S = 8L
 
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
     private val cookieJar = JavaNetCookieJar(
         CookieManager().apply { setCookiePolicy(CookiePolicy.ACCEPT_ALL) }
@@ -53,6 +53,8 @@ object StreamExtractor {
         Regex("""(https?://[^\s"'<>()\]]+\.m3u8(?:\?[^\s"'<>()\]]*)?)""",           RegexOption.IGNORE_CASE),
         Regex("""(https?://[^\s"'<>()\]]+\.mp4(?:\?[^\s"'<>()\]]*)?)""",            RegexOption.IGNORE_CASE),
         Regex("""["'](https?://[^"'\s]+/(?:master|index|playlist)\.m3u8[^"'\s]*)["']""",RegexOption.IGNORE_CASE),
+        Regex("""["']((?:https?://|//)[^"'\s]+(?:\.m3u8|\.mp4)[^"'\s]*)["']""", RegexOption.IGNORE_CASE),
+        Regex("""source\s*:\s*["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE),
     )
 
     // ── PUBLIC: try every known direct JSON API — call this ONCE before the server loop ──
@@ -218,10 +220,14 @@ object StreamExtractor {
             "$origin/api/source/$dataI",
             "$origin/api/v2/source/$dataI",
             "$origin/api/v3/source/$dataI",
+            "$origin/ajax/v2/sources/$dataI",
+            "$origin/ajax/v2/source/$dataI",
             "https://vsembed.ru/ajax/embed/episode?id=$dataI",
             "https://vsembed.ru/ajax/embed/movie?id=$dataI",
             "https://vidsrc.me/ajax/embed/episode?id=$dataI",
             "https://vidsrc.me/ajax/embed/movie?id=$dataI",
+            "https://vidsrc2.to/ajax/embed/episode?id=$dataI",
+            "https://vidsrc2.to/ajax/embed/movie?id=$dataI",
         )) {
             val resp = fetchJson(path, referer = pageUrl) ?: continue
             findVideoUrl(resp)?.let { return it }
