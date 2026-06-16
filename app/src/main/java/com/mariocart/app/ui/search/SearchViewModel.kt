@@ -35,16 +35,14 @@ class SearchViewModel : ViewModel() {
     }
 
     fun updateGenre(genreId: String) {
-        // For future use / compatibility
+        // For compatibility with initialGenre
     }
 
     private fun debounceSearch() {
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
-            delay(700)
-            if (_query.value.length >= 2) {
-                performSearch()
-            }
+            delay(800) // longer delay to avoid rapid calls
+            performSearch()
         }
     }
 
@@ -53,7 +51,7 @@ class SearchViewModel : ViewModel() {
             _isLoading.value = true
             try {
                 val items = repo.search(_query.value.trim())
-                _results.value = items
+                _results.value = items.take(20) // limit results
             } catch (e: Exception) {
                 e.printStackTrace()
                 _results.value = emptyList()
