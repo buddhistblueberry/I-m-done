@@ -15,6 +15,7 @@ import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -22,17 +23,22 @@ import java.util.concurrent.TimeUnit
  * The returned URL is played directly in ExoPlayer — no WebView involved.
  *
  * Strategy (in order):
- *  1. Known REST APIs  -> call JSON endpoint directly (fastest, no ads)
- *  2. VidSrc family   -> hit their AJAX endpoints after one page fetch
- *  3. Everything else -> probe 10 common API patterns, then scrape HTML
+ *  1. Cache hit        -> return immediately (1 hour TTL)
+ *  2. Known REST APIs  -> call JSON endpoint directly (fastest, no ads)
+ *  3. VidSrc family   -> hit their AJAX endpoints after one page fetch
+ *  4. Everything else -> probe 10 common API patterns, then scrape HTML
  */
 object StreamExtractor {
 
     private const val TAG = "StreamExtractor"
     private const val TIMEOUT_MS = 18_000L
+    private const val CACHE_TTL_MS = 60 * 60 * 1000L // 1 hour
 
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
+
+    private data class CacheEntry(val streamUrl: String, val timestamp: Long)
+    private val cache = ConcurrentHashMap<String, CacheEntry>()
 
     private val blockedDomains = setOf(
         "doubleclick", "googlesyndication", "adservice", "adnxs", "adroll",
@@ -103,6 +109,13 @@ object StreamExtractor {
     // -------------------------------------------------------------------------
 
     suspend fun extract(embedUrl: String): String? = withContext(Dispatchers.IO) {
+        // Check cache first
+        val cached = cache[embedUrl]
+        if (cached != null && System.currentTimeMillis() - cached.timestamp < CACHE_TTL_MS) {
+            Log.d(TAG, "Cache hit for: $embedUrl")
+            return@withContext cached.streamUrl
+        }
+
         try {
             val host = Uri.parse(embedUrl).host?.lowercase() ?: ""
             Log.d(TAG, "Extracting from: $embedUrl")
@@ -123,14 +136,28 @@ object StreamExtractor {
                 else                                               -> extractGeneric(embedUrl)
             }
 
-            if (result != null) Log.d(TAG, "Found stream: $result")
-            else Log.d(TAG, "No stream found for: $embedUrl")
+            if (result != null) {
+                Log.d(TAG, "Found stream: $result")
+                cache[embedUrl] = CacheEntry(result, System.currentTimeMillis())
+            } else {
+                Log.d(TAG, "No stream found for: $embedUrl")
+            }
 
             result
         } catch (e: Exception) {
             Log.e(TAG, "Extractor crashed for $embedUrl: ${e.message}")
             null
         }
+    }
+
+    fun clearCache() {
+        cache.clear()
+        Log.d(TAG, "Stream cache cleared")
+    }
+
+    fun evictCache(embedUrl: String) {
+        cache.remove(embedUrl)
+        Log.d(TAG, "Evicted cache for: $embedUrl")
     }
 
     // -------------------------------------------------------------------------
