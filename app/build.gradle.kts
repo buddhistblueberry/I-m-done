@@ -46,7 +46,12 @@ android {
     }
 }
 
-dependencies {    implementation("org.jsoup:jsoup:1.18.1")
+dependencies {
+    implementation("org.jsoup:jsoup:1.18.1")
+
+    // Gson (explicit to ensure 2.10.1 is used instead of the older version bundled with converter-gson)
+    implementation("com.google.code.gson:gson:2.10.1")
+
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.01.00")
     implementation(composeBom)
