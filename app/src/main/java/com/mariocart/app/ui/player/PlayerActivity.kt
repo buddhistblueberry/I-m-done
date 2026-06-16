@@ -110,7 +110,8 @@ class PlayerActivity : AppCompatActivity() {
         episode = intent.getIntExtra(EXTRA_EPISODE, 1)
 
         buildLayout()
-        // Prioritize WebView as requested
+        // Try background extraction while showing WebView first
+        resolveStreamFromBackend()
         switchToWebView()
     }
 
@@ -238,8 +239,10 @@ class PlayerActivity : AppCompatActivity() {
             videoFound = true
             extractJob?.cancel()
             handler.post {
-                if (embedUrl.isNotEmpty()) currentEmbedUrl = embedUrl
-                playVideo(videoUrl, serverName)
+                // If a direct stream is found, we can switch back to the native player
+                // But since the user wants WebView first, we only switch if the WebView fails or if we want to upgrade the experience
+                // For now, let's keep it in WebView as requested, but we've found the stream
+                setLoadingStatus("Direct stream found: $serverName")
             }
         }
     }
