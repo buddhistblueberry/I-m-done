@@ -18,21 +18,11 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-/**
- * Extracts a direct .m3u8 or .mp4 video URL from a streaming embed URL.
- * The returned URL is played directly in ExoPlayer — no WebView involved.
- *
- * Strategy (in order):
- *  1. Cache hit        -> return immediately (1 hour TTL)
- *  2. Known REST APIs  -> call JSON endpoint directly (fastest, no ads)
- *  3. VidSrc family   -> hit their AJAX endpoints after one page fetch
- *  4. Everything else -> probe 10 common API patterns, then scrape HTML
- */
 object StreamExtractor {
 
     private const val TAG = "StreamExtractor"
     private const val TIMEOUT_MS = 18_000L
-    private const val CACHE_TTL_MS = 60 * 60 * 1000L // 1 hour
+    private const val CACHE_TTL_MS = 60 * 60 * 1000L
 
     private val UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
@@ -104,12 +94,7 @@ object StreamExtractor {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Main entry point
-    // -------------------------------------------------------------------------
-
     suspend fun extract(embedUrl: String): String? = withContext(Dispatchers.IO) {
-        // Check cache first
         val cached = cache[embedUrl]
         if (cached != null && System.currentTimeMillis() - cached.timestamp < CACHE_TTL_MS) {
             Log.d(TAG, "Cache hit for: $embedUrl")
@@ -159,10 +144,6 @@ object StreamExtractor {
         cache.remove(embedUrl)
         Log.d(TAG, "Evicted cache for: $embedUrl")
     }
-
-    // -------------------------------------------------------------------------
-    // Tier 1 — known REST API servers
-    // -------------------------------------------------------------------------
 
     private fun extractVidLink(url: String): String? {
         val segs = Uri.parse(url).pathSegments
@@ -248,10 +229,6 @@ object StreamExtractor {
         return fetchJson(apiUrl, referer = url)?.let { parseJson(it) }
     }
 
-    // -------------------------------------------------------------------------
-    // Tier 2 — VidSrc family (AJAX endpoints)
-    // -------------------------------------------------------------------------
-
     private fun extractVidSrcFamily(url: String): String? {
         val html = fetch(url) ?: return null
         findVideoInHtml(html)?.let { return it }
@@ -298,10 +275,6 @@ object StreamExtractor {
         return followIframes(html, url)
     }
 
-    // -------------------------------------------------------------------------
-    // Tier 3 — generic API probe + HTML scrape
-    // -------------------------------------------------------------------------
-
     private fun extractGeneric(url: String): String? {
         val uri = Uri.parse(url)
         val origin = url.toOrigin()
@@ -336,13 +309,10 @@ object StreamExtractor {
         return followIframes(html, url)
     }
 
-    // -------------------------------------------------------------------------
-    // JSON parsing — recursive traversal
-    // -------------------------------------------------------------------------
-
+    @Suppress("DEPRECATION")
     private fun parseJson(raw: String): String? {
         return try {
-            findInElement(JsonParser.parseString(raw))
+            findInElement(JsonParser().parse(raw))
         } catch (e: JsonSyntaxException) {
             findVideoInHtml(raw)
         }
@@ -384,10 +354,6 @@ object StreamExtractor {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // HTML scraping
-    // -------------------------------------------------------------------------
-
     private val htmlPatterns = listOf(
         Regex(""""file"\s*:\s*["']?(https?://[^"'\s,}\]]+\.m3u8[^"'\s,}\]]*)""", RegexOption.IGNORE_CASE),
         Regex(""""file"\s*:\s*["']?(https?://[^"'\s,}\]]+\.mp4[^"'\s,}\]]*)""",  RegexOption.IGNORE_CASE),
@@ -427,13 +393,13 @@ object StreamExtractor {
             try {
                 val decoded = String(Base64.decode(m.groupValues[1], Base64.DEFAULT))
                 if (isValidVideo(decoded)) return decoded
-            } catch (e: Exception) { /* skip */ }
+            } catch (e: Exception) { }
         }
         Regex("""["']([A-Za-z0-9+/]{60,}={0,2})["']""").findAll(html).forEach { m ->
             try {
                 val decoded = String(Base64.decode(m.groupValues[1], Base64.DEFAULT))
                 if (decoded.startsWith("http") && isValidVideo(decoded)) return decoded
-            } catch (e: Exception) { /* skip */ }
+            } catch (e: Exception) { }
         }
         return null
     }
@@ -453,10 +419,6 @@ object StreamExtractor {
         return null
     }
 
-    // -------------------------------------------------------------------------
-    // HTTP helpers
-    // -------------------------------------------------------------------------
-
     private fun fetch(url: String, referer: String? = null): String? {
         return try {
             val request = Request.Builder()
@@ -470,9 +432,7 @@ object StreamExtractor {
                 .header("Sec-Fetch-Site", "cross-site")
                 .build()
             val response = client.newCall(request).execute()
-            val body = if (response.isSuccessful) {
-                response.body?.string()
-            } else {
+            val body = if (response.isSuccessful) response.body?.string() else {
                 Log.d(TAG, "fetch $url -> ${response.code}")
                 null
             }
@@ -496,9 +456,7 @@ object StreamExtractor {
                 .header("Origin", url.toOrigin())
                 .build()
             val response = client.newCall(request).execute()
-            val body = if (response.isSuccessful) {
-                response.body?.string()
-            } else {
+            val body = if (response.isSuccessful) response.body?.string() else {
                 Log.d(TAG, "fetchJson $url -> ${response.code}")
                 null
             }
@@ -509,10 +467,6 @@ object StreamExtractor {
             null
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
 
     private fun isValidVideo(url: String): Boolean {
         if (url.isBlank() || url.length < 20 || !url.startsWith("http")) return false
