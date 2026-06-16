@@ -46,6 +46,12 @@ android {
     }
 }
 
+configurations.all {
+    resolutionStrategy {
+        force("com.google.code.gson:gson:2.10.1")
+    }
+}
+
 dependencies {
     implementation("org.jsoup:jsoup:1.18.1")
 
