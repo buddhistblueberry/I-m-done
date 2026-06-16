@@ -23,44 +23,36 @@ class SearchViewModel : ViewModel() {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error
-
     private var searchJob: Job? = null
 
     fun updateQuery(newQuery: String) {
         _query.value = newQuery
-        _error.value = null
+        if (newQuery.length < 2) {
+            _results.value = emptyList()
+            return
+        }
         debounceSearch()
-    }
-
-    fun updateGenre(genreId: String) {
-        // Not used in simple version but kept for compatibility
     }
 
     private fun debounceSearch() {
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
-            delay(600) // Slightly longer debounce
+            delay(700)
             if (_query.value.length >= 2) {
-                performSearch()
-            } else {
-                _results.value = emptyList()
+                safeSearch()
             }
         }
     }
 
-    private fun performSearch() {
+    private fun safeSearch() {
         viewModelScope.launch {
             _isLoading.value = true
-            _error.value = null
             try {
                 val items = repo.search(_query.value.trim())
                 _results.value = items
             } catch (e: Exception) {
-                _results.value = emptyList()
-                _error.value = "Search failed. Check connection."
                 e.printStackTrace()
+                _results.value = emptyList()
             } finally {
                 _isLoading.value = false
             }
