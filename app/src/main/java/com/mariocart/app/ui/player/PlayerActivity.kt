@@ -539,7 +539,7 @@ class PlayerActivity : AppCompatActivity() {
         isPlaying = false
     }
 
-// ── Quality picker ───────────────────────────────────────────────────────
+    // ── Quality picker ───────────────────────────────────────────────────────
 private fun showQualityPicker() {
     cancelAutoHide()
     val labels = arrayOf("Auto (Best)", "1080p", "720p", "480p", "360p")
