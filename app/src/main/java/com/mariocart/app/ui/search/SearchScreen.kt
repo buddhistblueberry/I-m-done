@@ -26,11 +26,19 @@ import com.mariocart.app.ui.theme.TextMuted
 fun SearchScreen(
     onItemClick: (TmdbItem) -> Unit,
     onClose: () -> Unit,
+    initialGenre: String? = null,   // ← Added to match MainActivity call
     viewModel: SearchViewModel = viewModel()
 ) {
     val query by viewModel.query.collectAsState()
     val results by viewModel.results.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+
+    // Apply initial genre if provided
+    LaunchedEffect(initialGenre) {
+        if (!initialGenre.isNullOrEmpty()) {
+            viewModel.updateGenre(initialGenre)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -59,7 +67,9 @@ fun SearchScreen(
             onValueChange = { viewModel.updateQuery(it) },
             placeholder = { Text("Search movies or shows...", color = TextMuted) },
             leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Red,
                 focusedTextColor = Color.White,
@@ -68,7 +78,7 @@ fun SearchScreen(
         )
 
         if (isLoading) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Red)
             }
         } else if (results.isNotEmpty()) {
@@ -78,8 +88,12 @@ fun SearchScreen(
                 }
             }
         } else if (query.isNotBlank()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No results", color = TextMuted, fontSize = 16.sp)
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No results found", color = TextMuted, fontSize = 16.sp)
+            }
+        } else {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Start typing to search...", color = TextMuted, fontSize = 16.sp)
             }
         }
     }
