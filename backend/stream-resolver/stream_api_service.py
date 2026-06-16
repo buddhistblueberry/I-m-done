@@ -119,9 +119,11 @@ async def prov_videasy(tmdb_id: int, is_movie: bool, season: int, episode: int) 
     """Videasy Provider."""
     try:
         async with await get_client() as client:
+            # Videasy now often uses player.videasy.to or player.videasy.net
             url = f"https://player.videasy.to/movie/{tmdb_id}" if is_movie else f"https://player.videasy.to/tv/{tmdb_id}/{season}/{episode}"
             resp = await client.get(url)
-            # Look for sources-with-title API or direct m3u8
+            
+            # Look for direct m3u8 link in the page source
             match = re.search(r'(https?://[^\s"\'<>()\]]+\.m3u8(?:\?[^\s"\'<>()\]]*)?)', resp.text)
             if match:
                 return VideoSource(
@@ -130,6 +132,18 @@ async def prov_videasy(tmdb_id: int, is_movie: bool, season: int, episode: int) 
                     server="Videasy",
                     headers={"referer": url}
                 )
+    except Exception as e:
+        logger.debug(f"Videasy failed: {e}")
+    return None
+
+async def prov_vidsrc_me(tmdb_id: int, is_movie: bool, season: int, episode: int) -> Optional[VideoSource]:
+    """VidSrc.me Provider (Scraping)."""
+    try:
+        async with await get_client() as client:
+            url = f"https://vidsrcme.ru/embed/{tmdb_id}" if is_movie else f"https://vidsrcme.ru/embed/{tmdb_id}/{season}/{episode}"
+            resp = await client.get(url)
+            # VidSrc.me usually requires more complex decryption, but we can return the URL for WebView
+            return None
     except:
         pass
     return None
@@ -158,7 +172,7 @@ async def get_stream(
     is_movie = content_type == "movie"
     
     # Try providers in order of quality/reliability
-    providers = [prov_vidlink, prov_videasy]
+    providers = [prov_vidlink, prov_videasy, prov_vidsrc_me]
     
     for prov in providers:
         stream = await prov(tmdb_id, is_movie, season, episode)

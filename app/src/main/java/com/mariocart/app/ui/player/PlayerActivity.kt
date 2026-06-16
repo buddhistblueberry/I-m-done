@@ -292,10 +292,80 @@ class PlayerActivity : AppCompatActivity() {
         playerView.visibility = View.GONE
         webView.visibility = View.VISIBLE
         
-        webView.settings.javaScriptEnabled = true
-        webView.settings.domStorageEnabled = true
-        webView.settings.mediaPlaybackRequiresUserGesture = false
+        setupCleanWebView(webView)
         webView.loadUrl(embedUrl)
+    }
+
+    private fun setupCleanWebView(web: WebView) {
+        web.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            setSupportMultipleWindows(false)
+            javaScriptCanOpenWindowsAutomatically = false
+        }
+
+        web.webViewClient = object : WebViewClient() {
+            // Block ad-related domains and popups
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url?.toString() ?: ""
+                val host = request?.url?.host ?: ""
+                
+                // Only allow the main embed domain and its essential subdomains
+                val allowedDomains = listOf("vidsrc.to", "vidsrc.me", "vidlink.pro", "vsembed.ru", "megacloud.live", "vizcloud.co")
+                val isAllowed = allowedDomains.any { host.contains(it) }
+                
+                return if (isAllowed) {
+                    false // Let the WebView load it
+                } else {
+                    true // Block the navigation (likely an ad popup)
+                }
+            }
+
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                val url = request?.url?.toString()?.lowercase() ?: ""
+                
+                // Common ad/tracker keywords
+                val adKeywords = listOf("google-analytics", "doubleclick", "adsystem", "adservice", "popunder", "popup", "vast", "prebid")
+                if (adKeywords.any { url.contains(it) }) {
+                    return WebResourceResponse("text/plain", "utf-8", null) // Return empty response for ads
+                }
+                
+                return super.shouldInterceptRequest(view, request)
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                // Inject JS to remove overlays and auto-play
+                val cleanScript = """
+                    (function() {
+                        // 1. Remove common ad overlays
+                        const selectors = [
+                            '.ad-overlay', '.popup-container', '#popunder', 
+                            'div[class*="overlay"]', 'div[class*="popup"]',
+                            'iframe[src*="ads"]', 'a[href*="click"]'
+                        ];
+                        selectors.forEach(s => {
+                            document.querySelectorAll(s).forEach(el => el.remove());
+                        });
+
+                        // 2. Auto-click play buttons if they exist
+                        const playButtons = [
+                            '#play-button', '.play-button', 'div[aria-label="Play"]',
+                            '#pl_but', '.vjs-big-play-button'
+                        ];
+                        playButtons.forEach(s => {
+                            const btn = document.querySelector(s);
+                            if (btn) btn.click();
+                        });
+
+                        // 3. Prevent new windows from opening
+                        window.open = function() { return null; };
+                    })();
+                """.trimIndent()
+                view?.evaluateJavascript(cleanScript, null)
+            }
+        }
     }
 
     private fun buildLoadingOverlay() = FrameLayout(this).apply {
