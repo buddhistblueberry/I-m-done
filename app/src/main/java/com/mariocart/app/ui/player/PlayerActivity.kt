@@ -110,7 +110,8 @@ class PlayerActivity : AppCompatActivity() {
         episode = intent.getIntExtra(EXTRA_EPISODE, 1)
 
         buildLayout()
-        resolveStreamFromBackend()
+        // Prioritize WebView as requested
+        switchToWebView()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -288,8 +289,10 @@ class PlayerActivity : AppCompatActivity() {
             "https://vidsrc.to/embed/tv/$tmdbId/$season/$episode"
         }
         
+        // Hide native player and overlays immediately
         loadingOverlay.visibility = View.GONE
         playerView.visibility = View.GONE
+        controlsOverlay.visibility = View.GONE
         webView.visibility = View.VISIBLE
         
         setupCleanWebView(webView)
@@ -339,25 +342,39 @@ class PlayerActivity : AppCompatActivity() {
                 // Inject JS to remove overlays and auto-play
                 val cleanScript = """
                     (function() {
-                        // 1. Remove common ad overlays
-                        const selectors = [
-                            '.ad-overlay', '.popup-container', '#popunder', 
-                            'div[class*="overlay"]', 'div[class*="popup"]',
-                            'iframe[src*="ads"]', 'a[href*="click"]'
-                        ];
-                        selectors.forEach(s => {
-                            document.querySelectorAll(s).forEach(el => el.remove());
-                        });
+                        const clean = () => {
+                            // 1. Remove common ad overlays and annoying elements
+                            const selectors = [
+                                '.ad-overlay', '.popup-container', '#popunder', 
+                                'div[class*="overlay"]', 'div[class*="popup"]',
+                                'iframe[src*="ads"]', 'a[href*="click"]',
+                                '.fixed-bottom', '.top-ad'
+                            ];
+                            selectors.forEach(s => {
+                                document.querySelectorAll(s).forEach(el => {
+                                    el.style.display = 'none';
+                                    el.remove();
+                                });
+                            });
 
-                        // 2. Auto-click play buttons if they exist
-                        const playButtons = [
-                            '#play-button', '.play-button', 'div[aria-label="Play"]',
-                            '#pl_but', '.vjs-big-play-button'
-                        ];
-                        playButtons.forEach(s => {
-                            const btn = document.querySelector(s);
-                            if (btn) btn.click();
-                        });
+                            // 2. Auto-click play buttons if they exist
+                            const playButtons = [
+                                '#play-button', '.play-button', 'div[aria-label="Play"]',
+                                '#pl_but', '.vjs-big-play-button', '.play-btn'
+                            ];
+                            playButtons.forEach(s => {
+                                const btn = document.querySelector(s);
+                                if (btn && btn.offsetParent !== null) btn.click();
+                            });
+                        };
+
+                        // Run immediately and then every second for 10 seconds to catch dynamic ads
+                        clean();
+                        let count = 0;
+                        const interval = setInterval(() => {
+                            clean();
+                            if (++count > 10) clearInterval(interval);
+                        }, 1000);
 
                         // 3. Prevent new windows from opening
                         window.open = function() { return null; };
