@@ -197,10 +197,7 @@ class PlayerActivity : AppCompatActivity() {
                 if (!json.getBoolean("success")) {
                     setLoadingStatus("No streams found, trying fallback…")
                     val fallbackIframe = json.optString("fallback_iframe", "")
-                    if (fallbackIframe.isNotEmpty()) {
-                        currentEmbedUrl = fallbackIframe
-                        handler.post { switchToWebView() }
-                    }
+                    handler.post { switchToWebView(if (fallbackIframe.isNotEmpty()) fallbackIframe else null) }
                     return@launch
                 }
 
@@ -284,9 +281,21 @@ class PlayerActivity : AppCompatActivity() {
         })
     }
 
-    private fun switchToWebView() {
+    private fun switchToWebView(url: String? = null) {
+        val embedUrl = url ?: if (contentType == "movie") {
+            "https://vidsrc.to/embed/movie/$tmdbId"
+        } else {
+            "https://vidsrc.to/embed/tv/$tmdbId/$season/$episode"
+        }
+        
         loadingOverlay.visibility = View.GONE
+        playerView.visibility = View.GONE
         webView.visibility = View.VISIBLE
+        
+        webView.settings.javaScriptEnabled = true
+        webView.settings.domStorageEnabled = true
+        webView.settings.mediaPlaybackRequiresUserGesture = false
+        webView.loadUrl(embedUrl)
     }
 
     private fun buildLoadingOverlay() = FrameLayout(this).apply {

@@ -1,28 +1,22 @@
 """
-Stream API Service
-==================
+Stream API Service v2.0
+=======================
 
-A FastAPI backend service that handles video stream extraction from multiple
-servers, optimized for long-duration videos.
-
-Fixes:
-1. Updated API endpoints (VidLink, Videasy, etc.) to match current production.
-2. Fixed the response contract to match PlayerActivity expectations (nested headers).
-3. Added fallback_iframe support.
-4. Added support for encrypted/dynamic source IDs.
+A robust multi-provider video extraction service.
+Optimized for high-success rate discovery and long-form content.
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 import httpx
 import asyncio
 import re
 import json
 import logging
+import base64
 from datetime import datetime
-from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,17 +25,6 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # Data Models
 # ─────────────────────────────────────────────────────────────────────────────
-
-class StreamingServer(BaseModel):
-    name: str
-    baseUrl: str
-    
-    def movie_url(self, tmdb_id: int) -> str:
-        return f"{self.baseUrl}/movie/{tmdb_id}"
-    
-    def tv_url(self, tmdb_id: int, season: int, episode: int) -> str:
-        return f"{self.baseUrl}/tv/{tmdb_id}/{season}/{episode}"
-
 
 class VideoSource(BaseModel):
     url: str
@@ -56,129 +39,113 @@ class StreamResponse(BaseModel):
     stream: Optional[VideoSource] = None
     fallback_iframe: Optional[str] = None
     error: Optional[str] = None
-    server_tried: int = 0
     time_ms: float = 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Server Configuration
+# HTTP Client & Utils
 # ─────────────────────────────────────────────────────────────────────────────
 
-SERVERS = [
-    StreamingServer(name="VidLink", baseUrl="https://vidlink.pro"),
-    StreamingServer(name="Videasy", baseUrl="https://player.videasy.to"),
-    StreamingServer(name="VidSrc.to", baseUrl="https://vidsrc.to/embed"),
-    StreamingServer(name="VidSrc.me", baseUrl="https://vidsrcme.ru/embed"),
-    StreamingServer(name="AutoEmbed", baseUrl="https://autoembed.cc/embed"),
-    StreamingServer(name="SuperEmbed", baseUrl="https://superembed.stream/embed"),
-    StreamingServer(name="Embed.su", baseUrl="https://embed.su/embed"),
-]
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FastAPI App Setup
-# ─────────────────────────────────────────────────────────────────────────────
-
-app = FastAPI(
-    title="Stream API Service",
-    description="Video stream extraction service for I-m-done",
-    version="1.1.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HTTP Client Setup
-# ─────────────────────────────────────────────────────────────────────────────
-
-USER_AGENT = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-
-@lru_cache(maxsize=1)
-def get_http_client() -> httpx.AsyncClient:
+async def get_client():
     return httpx.AsyncClient(
-        timeout=15.0,
+        timeout=10.0,
         follow_redirects=True,
         headers={"User-Agent": USER_AGENT}
     )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Extraction Logic
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def extract_vidlink(tmdb_id: int, is_movie: bool, season: int = 1, episode: int = 1) -> Optional[VideoSource]:
-    """VidLink extraction (handles their dynamic/encrypted IDs by fetching the page first)."""
-    base = "https://vidlink.pro"
-    path = f"/movie/{tmdb_id}" if is_movie else f"/tv/{tmdb_id}/{season}/{episode}"
-    url = base + path
-    
-    client = get_http_client()
-    try:
-        # Step 1: Get the page to find the dynamic API URL
-        resp = await client.get(url)
-        if resp.status_code != 200: return None
-        
-        # Look for the API call pattern in the page or just use the known pattern if possible
-        # Currently VidLink uses a hash in the URL: /api/b/movie/[HASH]
-        # For a robust fix, we'd parse the JS, but we can try to find it in the HTML
-        match = re.search(r'https://vidlink\.pro/api/b/(movie|tv)/[a-zA-Z0-9]+', resp.text)
-        api_url = match.group(0) if match else None
-        
-        if not api_url:
-            # Fallback to a guess or standard pattern if hash is stable for session
-            return None
-
-        # Step 2: Call the actual API
-        api_resp = await client.get(api_url, headers={"Referer": url})
-        data = api_resp.json()
-        
-        if "stream" in data and "playlist" in data["stream"]:
-            video_url = data["stream"]["playlist"]
-            # If the backend returns its own headers, use them, otherwise use defaults
-            resp_headers = data["stream"].get("headers", {})
-            return VideoSource(
-                url=video_url,
-                format="hls",
-                server="VidLink",
-                headers={
-                    "referer": resp_headers.get("referer", "https://megacloud.live/"),
-                    "origin": resp_headers.get("origin", "https://megacloud.live")
-                }
-            )
-    except Exception as e:
-        logger.debug(f"VidLink failed: {e}")
-    return None
-
-async def extract_videasy(tmdb_id: int, is_movie: bool, season: int = 1, episode: int = 1) -> Optional[VideoSource]:
-    """Videasy extraction."""
-    client = get_http_client()
-    try:
-        # Videasy uses a search-based API now
-        # We need the title/year which we don't have here, so we'd usually fetch from TMDB first
-        # But we can try the direct embed page scraping as fallback
-        url = f"https://player.videasy.to/movie/{tmdb_id}" if is_movie else f"https://player.videasy.to/tv/{tmdb_id}/{season}/{episode}"
-        resp = await client.get(url)
-        
-        # Look for .m3u8 in the page source
-        match = re.search(r'(https?://[^\s"\'<>()\]]+\.m3u8(?:\?[^\s"\'<>()\]]*)?)', resp.text)
-        if match:
-            return VideoSource(
-                url=match.group(1),
-                format="hls",
-                server="Videasy",
-                headers={"Referer": url}
-            )
-    except Exception as e:
-        logger.debug(f"Videasy failed: {e}")
+def extract_json(text: str, pattern: str) -> Optional[Dict]:
+    match = re.search(pattern, text)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except:
+            pass
     return None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main API Endpoint
+# Extraction Providers
 # ─────────────────────────────────────────────────────────────────────────────
+
+async def prov_vidlink(tmdb_id: int, is_movie: bool, season: int, episode: int) -> Optional[VideoSource]:
+    """VidLink Provider: Uses their internal API with dynamic pathing."""
+    try:
+        async with await get_client() as client:
+            # 1. Get the main page to find the dynamic API hash
+            base_url = "https://vidlink.pro"
+            path = f"/movie/{tmdb_id}" if is_movie else f"/tv/{tmdb_id}/{season}/{episode}"
+            resp = await client.get(base_url + path)
+            
+            # 2. Extract the API call from the page
+            # Pattern: https://vidlink.pro/api/b/movie/[HASH]
+            match = re.search(r'https://vidlink\.pro/api/b/(movie|tv)/([a-zA-Z0-9]+)', resp.text)
+            if not match: return None
+            
+            api_url = match.group(0)
+            api_resp = await client.get(api_url, headers={"Referer": base_url + path})
+            data = api_resp.json()
+            
+            if "stream" in data and "playlist" in data["stream"]:
+                return VideoSource(
+                    url=data["stream"]["playlist"],
+                    format="hls",
+                    server="VidLink",
+                    headers={
+                        "referer": "https://megacloud.live/",
+                        "origin": "https://megacloud.live"
+                    }
+                )
+    except Exception as e:
+        logger.error(f"VidLink error: {e}")
+    return None
+
+async def prov_vidsrc_to(tmdb_id: int, is_movie: bool, season: int, episode: int) -> Optional[VideoSource]:
+    """VidSrc.to Provider: High reliability fallback."""
+    try:
+        async with await get_client() as client:
+            # VidSrc.to often requires JS execution for the full stream, 
+            # but we can sometimes find the sources API
+            base = "https://vidsrc.to/embed"
+            path = f"/movie/{tmdb_id}" if is_movie else f"/tv/{tmdb_id}/{season}/{episode}"
+            # For now, we provide the iframe as a high-quality fallback
+            # Real extraction requires more complex decryption (RC4/AES)
+            return None 
+    except:
+        pass
+    return None
+
+async def prov_videasy(tmdb_id: int, is_movie: bool, season: int, episode: int) -> Optional[VideoSource]:
+    """Videasy Provider."""
+    try:
+        async with await get_client() as client:
+            url = f"https://player.videasy.to/movie/{tmdb_id}" if is_movie else f"https://player.videasy.to/tv/{tmdb_id}/{season}/{episode}"
+            resp = await client.get(url)
+            # Look for sources-with-title API or direct m3u8
+            match = re.search(r'(https?://[^\s"\'<>()\]]+\.m3u8(?:\?[^\s"\'<>()\]]*)?)', resp.text)
+            if match:
+                return VideoSource(
+                    url=match.group(1),
+                    format="hls",
+                    server="Videasy",
+                    headers={"referer": url}
+                )
+    except:
+        pass
+    return None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API Endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/api/stream")
 async def get_stream(
@@ -190,30 +157,23 @@ async def get_stream(
     start_time = datetime.now()
     is_movie = content_type == "movie"
     
-    # Try VidLink first (best quality for long videos)
-    stream = await extract_vidlink(tmdb_id, is_movie, season, episode)
-    if not stream:
-        # Try Videasy
-        stream = await extract_videasy(tmdb_id, is_movie, season, episode)
-        
-    elapsed = (datetime.now() - start_time).total_seconds() * 1000
+    # Try providers in order of quality/reliability
+    providers = [prov_vidlink, prov_videasy]
     
-    if stream:
-        return StreamResponse(
-            success=True,
-            stream=stream,
-            server_tried=2,
-            time_ms=elapsed
-        )
+    for prov in providers:
+        stream = await prov(tmdb_id, is_movie, season, episode)
+        if stream:
+            elapsed = (datetime.now() - start_time).total_seconds() * 1000
+            return StreamResponse(success=True, stream=stream, time_ms=elapsed)
     
-    # Fallback Iframe
+    # Final Fallback: Iframe
     fallback = f"https://vidsrc.to/embed/movie/{tmdb_id}" if is_movie else f"https://vidsrc.to/embed/tv/{tmdb_id}/{season}/{episode}"
+    elapsed = (datetime.now() - start_time).total_seconds() * 1000
     
     return StreamResponse(
         success=False,
         fallback_iframe=fallback,
-        error="Direct stream extraction failed. Use fallback iframe.",
-        server_tried=2,
+        error="No direct stream found. Using iframe fallback.",
         time_ms=elapsed
     )
 
