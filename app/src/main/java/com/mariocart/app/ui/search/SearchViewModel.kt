@@ -23,29 +23,29 @@ class SearchViewModel : ViewModel() {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
 
-    private val _genre = MutableStateFlow("")
-    val genre: StateFlow<String> = _genre
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error
 
     private var searchJob: Job? = null
 
     fun updateQuery(newQuery: String) {
         _query.value = newQuery
+        _error.value = null
         debounceSearch()
     }
 
     fun updateGenre(genreId: String) {
-        _genre.value = genreId
-        if (_query.value.isBlank() && genreId.isNotEmpty()) {
-            performDiscover()
-        }
+        // Not used in simple version but kept for compatibility
     }
 
     private fun debounceSearch() {
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
-            delay(500)
+            delay(600) // Slightly longer debounce
             if (_query.value.length >= 2) {
                 performSearch()
+            } else {
+                _results.value = emptyList()
             }
         }
     }
@@ -53,24 +53,14 @@ class SearchViewModel : ViewModel() {
     private fun performSearch() {
         viewModelScope.launch {
             _isLoading.value = true
+            _error.value = null
             try {
-                val items = repo.search(_query.value)
+                val items = repo.search(_query.value.trim())
                 _results.value = items
             } catch (e: Exception) {
                 _results.value = emptyList()
-            } finally {
-                _isLoading.value = false
-            }
-        }
-    }
-
-    private fun performDiscover() {
-        viewModelScope.launch {
-            _isLoading.value = true
-            try {
-                _results.value = repo.discover("movie", _genre.value.ifEmpty { null })
-            } catch (e: Exception) {
-                _results.value = emptyList()
+                _error.value = "Search failed. Check connection."
+                e.printStackTrace()
             } finally {
                 _isLoading.value = false
             }
