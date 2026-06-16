@@ -104,25 +104,29 @@ class SearchViewModel : ViewModel() {
         }
     }
 
-        private fun performSearch() {
+    private fun performSearch() {
         val q = _query.value.trim()
         if (q.isBlank()) return
+
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _isLoading.value = true
+
             try {
-                val type = if (_searchType.value == "multi") "multi" else _searchType.value
+                val type =
+                    if (_searchType.value == "multi") "multi"
+                    else _searchType.value
+
                 var items = repo.search(q, type, _yearFilter.value)
 
-                // Safer year filter
-                val yf = _yearFilter.value
-                if (yf != null) {
+                val minYear = _yearFilter.value?.toIntOrNull()
+                if (minYear != null) {
                     items = items.filter { item ->
-                        item.year.isNotBlank() && (item.year.toIntOrNull() ?: 0) >= yf.toIntOrNull() ?: 0
+                        val itemYear = item.year.toIntOrNull() ?: 0
+                        itemYear >= minYear
                     }
                 }
 
-                // Safer genre filter
                 if (_genre.value.isNotEmpty()) {
                     val genreId = _genre.value.toIntOrNull()
                     if (genreId != null) {
@@ -134,9 +138,9 @@ class SearchViewModel : ViewModel() {
 
                 items = sortItems(items)
                 _results.value = items
+
             } catch (e: Exception) {
                 _results.value = emptyList()
-                // TODO: Show error toast if you add one
             } finally {
                 _isLoading.value = false
             }
@@ -145,21 +149,27 @@ class SearchViewModel : ViewModel() {
 
     private fun performDiscover() {
         searchJob?.cancel()
+
         searchJob = viewModelScope.launch {
             _isLoading.value = true
+
             try {
                 val type = when (_searchType.value) {
                     "tv" -> "tv"
                     else -> "movie"
                 }
+
                 val genreId = _genre.value.ifEmpty { null }
+
                 val items = repo.discover(
                     type = type,
                     genreId = genreId,
                     sortBy = _sortBy.value,
                     page = 1
                 )
+
                 _results.value = items
+
             } catch (e: Exception) {
                 _results.value = emptyList()
             } finally {
@@ -167,3 +177,14 @@ class SearchViewModel : ViewModel() {
             }
         }
     }
+
+    private fun sortItems(items: List<TmdbItem>): List<TmdbItem> {
+        return when (_sortBy.value) {
+            "title.asc" -> items.sortedBy { it.title }
+            "title.desc" -> items.sortedByDescending { it.title }
+            "year.desc" -> items.sortedByDescending { it.year }
+            "year.asc" -> items.sortedBy { it.year }
+            else -> items
+        }
+    }
+}
