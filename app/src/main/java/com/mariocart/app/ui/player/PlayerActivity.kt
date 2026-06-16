@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -12,8 +15,22 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.ArrayAdapter
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ListView
+import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 class PlayerActivity : AppCompatActivity() {
 
@@ -23,21 +40,16 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_TITLE   = "title"
         private const val EXTRA_SEASON  = "season"
         private const val EXTRA_EPISODE = "episode"
+        private const val BACKEND_URL   = "https://your-backend-url.com" // Update this
 
-        fun newIntent(
-            context: Context,
-            tmdbId: Int,
-            type: String,
-            title: String,
-            season: Int = 1,
-            episode: Int = 1
-        ): Intent = Intent(context, PlayerActivity::class.java).apply {
-            putExtra(EXTRA_TMDB_ID, tmdbId)
-            putExtra(EXTRA_TYPE, type)
-            putExtra(EXTRA_TITLE, title)
-            putExtra(EXTRA_SEASON, season)
-            putExtra(EXTRA_EPISODE, episode)
-        }
+        fun newIntent(context: Context, tmdbId: Int, type: String, title: String, season: Int = 1, episode: Int = 1): Intent = 
+            Intent(context, PlayerActivity::class.java).apply {
+                putExtra(EXTRA_TMDB_ID, tmdbId)
+                putExtra(EXTRA_TYPE, type)
+                putExtra(EXTRA_TITLE, title)
+                putExtra(EXTRA_SEASON, season)
+                putExtra(EXTRA_EPISODE, episode)
+            }
     }
 
     private var tmdbId = 0
@@ -47,6 +59,8 @@ class PlayerActivity : AppCompatActivity() {
     private var videoTitle = ""
     
     private lateinit var webView: WebView
+    private lateinit var loadingOverlay: FrameLayout
+    private val httpClient = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).build()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,7 +75,7 @@ class PlayerActivity : AppCompatActivity() {
         episode = intent.getIntExtra(EXTRA_EPISODE, 1)
 
         setupLayout()
-        loadVideo()
+        fetchServers()
     }
 
     private fun setupLayout() {
@@ -72,20 +86,110 @@ class PlayerActivity : AppCompatActivity() {
 
         webView = WebView(this).apply {
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            visibility = View.VISIBLE
+            visibility = View.GONE
             setupCleanWebView(this)
         }
 
+        loadingOverlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            addView(TextView(context).apply {
+                text = "Fetching Servers..."
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+            })
+        }
+
         root.addView(webView)
+        root.addView(loadingOverlay)
         setContentView(root)
     }
 
-    private fun loadVideo() {
-        val embedUrl = if (contentType == "movie") {
+    private fun fetchServers() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val url = "${BACKEND_URL}/api/servers?tmdb_id=$tmdbId&content_type=$contentType&season=$season&episode=$episode"
+                val request = Request.Builder().url(url).build()
+                val response = httpClient.newCall(request).execute()
+                val body = response.body?.string() ?: "[]"
+                val servers = JSONArray(body)
+                
+                withContext(Dispatchers.Main) {
+                    showServerSelection(servers)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    // Fallback to default if backend fails
+                    switchToWebView()
+                }
+            }
+        }
+    }
+
+    private fun showServerSelection(servers: JSONArray) {
+        val serverNames = mutableListOf<String>()
+        for (i in 0 until servers.length()) {
+            serverNames.add(servers.getJSONObject(i).getString("name"))
+        }
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Select Server")
+            .setCancelable(false)
+            .setItems(serverNames.toTypedArray()) { _, which ->
+                val selectedServer = servers.getJSONObject(which)
+                handleServerSelection(selectedServer)
+            }
+            .show()
+    }
+
+    private fun handleServerSelection(server: JSONObject) {
+        val serverId = server.getString("id")
+        val embedUrl = server.getString("embed_url")
+        
+        loadingOverlay.visibility = View.VISIBLE
+        
+        // If it's a direct server, try extraction first
+        if (server.getString("type") == "direct") {
+            tryExtraction(serverId, embedUrl)
+        } else {
+            switchToWebView(embedUrl)
+        }
+    }
+
+    private fun tryExtraction(serverId: String, fallbackUrl: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val url = "${BACKEND_URL}/api/stream?server=$serverId&tmdb_id=$tmdbId&content_type=$contentType&season=$season&episode=$episode"
+                val request = Request.Builder().url(url).build()
+                val response = httpClient.newCall(request).execute()
+                val json = JSONObject(response.body?.string() ?: "{}")
+                
+                withContext(Dispatchers.Main) {
+                    if (json.optBoolean("success", false)) {
+                        // In a real app, you'd use ExoPlayer here. 
+                        // But per your request for WebView, we'll still use WebView but with the direct URL if possible, 
+                        // or just stick to the embed for better compatibility.
+                        switchToWebView(fallbackUrl)
+                    } else {
+                        switchToWebView(fallbackUrl)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    switchToWebView(fallbackUrl)
+                }
+            }
+        }
+    }
+
+    private fun switchToWebView(url: String? = null) {
+        val embedUrl = url ?: if (contentType == "movie") {
             "https://vidsrc.to/embed/movie/$tmdbId"
         } else {
             "https://vidsrc.to/embed/tv/$tmdbId/$season/$episode"
         }
+        
+        loadingOverlay.visibility = View.GONE
+        webView.visibility = View.VISIBLE
         webView.loadUrl(embedUrl)
     }
 
@@ -100,31 +204,10 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         web.webViewClient = object : WebViewClient() {
-            // THE "FIRST-CLICK" AD TRAP BLOCKER
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val url = request?.url?.toString() ?: ""
                 val host = request?.url?.host ?: ""
-                
-                // Essential domains only
                 val allowedDomains = listOf("vidsrc.to", "vidsrc.me", "vidlink.pro", "vsembed.ru", "megacloud.live", "vizcloud.co", "2embed")
-                val isAllowed = allowedDomains.any { host.contains(it) }
-                
-                // If it's not an allowed domain, it's almost certainly an ad redirect from the first click
-                return if (isAllowed) {
-                    false 
-                } else {
-                    true // BLOCK THE AD REDIRECT
-                }
-            }
-
-            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                val url = request?.url?.toString()?.lowercase() ?: ""
-                val adKeywords = listOf("google-analytics", "doubleclick", "adsystem", "adservice", "popunder", "popup", "vast", "prebid", "proads")
-                
-                if (adKeywords.any { url.contains(it) }) {
-                    return WebResourceResponse("text/plain", "utf-8", null)
-                }
-                return super.shouldInterceptRequest(view, request)
+                return !allowedDomains.any { host.contains(it) }
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -138,42 +221,16 @@ class PlayerActivity : AppCompatActivity() {
         val script = """
             (function() {
                 const clean = () => {
-                    // 1. Remove ad overlays
-                    const selectors = [
-                        '.ad-overlay', '.popup-container', '#popunder', 
-                        'div[class*="overlay"]', 'div[class*="popup"]',
-                        'iframe[src*="ads"]', 'a[href*="click"]',
-                        '.fixed-bottom', '.top-ad', '#disclaimer'
-                    ];
-                    selectors.forEach(s => {
-                        document.querySelectorAll(s).forEach(el => el.remove());
-                    });
-
-                    // 2. Force click play button
-                    const playButtons = [
-                        '#play-button', '.play-button', 'div[aria-label="Play"]',
-                        '#pl_but', '.vjs-big-play-button', '.play-btn', '.vjs-big-play-button'
-                    ];
-                    playButtons.forEach(s => {
-                        const btn = document.querySelector(s);
-                        if (btn && btn.offsetParent !== null) {
-                            btn.click();
-                            // Dispatch a real click event to bypass some anti-bot checks
-                            btn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
-                        }
-                    });
+                    document.querySelectorAll('.ad-overlay, .popup-container, #popunder, div[class*="overlay"], div[class*="popup"], iframe[src*="ads"], a[href*="click"], .fixed-bottom, .top-ad').forEach(el => el.remove());
+                    const playBtn = document.querySelector('#play-button, .play-button, div[aria-label="Play"], #pl_but, .vjs-big-play-button, .play-btn');
+                    if (playBtn && playBtn.offsetParent !== null) {
+                        playBtn.click();
+                        playBtn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+                    }
                 };
-
-                // Continuous cleaning for 15 seconds
                 clean();
-                let count = 0;
-                const interval = setInterval(() => {
-                    clean();
-                    if (++count > 15) clearInterval(interval);
-                }, 1000);
-
-                // Disable window.open to stop popups
-                window.open = function() { return null; };
+                setInterval(clean, 1000);
+                window.open = () => null;
             })();
         """.trimIndent()
         view?.evaluateJavascript(script, null)
