@@ -48,6 +48,7 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_EPISODE = "episode"
         
         // Backend API configuration
+        // TODO: Replace with your actual deployed backend URL (e.g., https://imdone-backend.railway.app/api/stream)
         private const val BACKEND_API_URL = "https://your-backend-url.com/api/stream"
 
         fun newIntent(
