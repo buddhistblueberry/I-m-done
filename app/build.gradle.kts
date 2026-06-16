@@ -49,10 +49,8 @@ android {
 dependencies {
     implementation("org.jsoup:jsoup:1.18.1")
 
-    // Gson (explicit to ensure 2.10.1 is used instead of the older version bundled with converter-gson)
     implementation("com.google.code.gson:gson:2.10.1")
 
-    // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.01.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -64,32 +62,24 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     implementation("androidx.navigation:navigation-compose:2.7.6")
 
-    // Coil for image loading
     implementation("io.coil-kt:coil-compose:2.5.0")
 
-    // Retrofit for networking
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
-    // ExoPlayer (Media3) for native video playback
     implementation("androidx.media3:media3-exoplayer:1.2.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.2.1")
     implementation("androidx.media3:media3-ui:1.2.1")
 
-    // Leanback for Android TV
     implementation("androidx.leanback:leanback:1.0.0")
 
-    // Core
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
 
-    // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // lifecycleScope for per-movie server probing
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
 
-    // OkHttp for ServerTester
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
