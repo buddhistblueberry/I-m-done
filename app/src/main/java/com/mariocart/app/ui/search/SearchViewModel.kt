@@ -34,17 +34,21 @@ class SearchViewModel : ViewModel() {
         debounceSearch()
     }
 
+    fun updateGenre(genreId: String) {
+        // For future use / compatibility
+    }
+
     private fun debounceSearch() {
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             delay(700)
             if (_query.value.length >= 2) {
-                safeSearch()
+                performSearch()
             }
         }
     }
 
-    private fun safeSearch() {
+    private fun performSearch() {
         viewModelScope.launch {
             _isLoading.value = true
             try {
