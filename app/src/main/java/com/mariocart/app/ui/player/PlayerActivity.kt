@@ -9,6 +9,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -61,6 +62,8 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var webView:       WebView
     private lateinit var loadingOverlay: FrameLayout
     private lateinit var loadingText:   TextView
+    private var customView: View? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -69,12 +72,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_FULLSCREEN or
-            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-        )
+        hideSystemUI()
 
         tmdbId      = intent.getIntExtra(EXTRA_TMDB_ID, 0)
         contentType = intent.getStringExtra(EXTRA_TYPE) ?: "movie"
@@ -88,6 +86,18 @@ class PlayerActivity : AppCompatActivity() {
         ServerManager.initialize(this)
         ServerManager.resetHealth()
         showServerSelection()
+    }
+
+    private fun hideSystemUI() {
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+        )
     }
 
     override fun onDestroy() {
@@ -176,6 +186,7 @@ class PlayerActivity : AppCompatActivity() {
         webView.visibility = View.VISIBLE
         webView.loadUrl(embedUrl)
         webView.webViewClient = buildWebViewClient(embedUrl)
+        webView.webChromeClient = buildWebChromeClient()
     }
 
     private fun buildWebViewClient(originUrl: String) = object : WebViewClient() {
@@ -203,8 +214,33 @@ class PlayerActivity : AppCompatActivity() {
             request: WebResourceRequest?
         ): Boolean {
             val host = request?.url?.host ?: return false
-            // Keep navigation inside known streaming/embed domains only.
             return !isAllowedDomain(host)
+        }
+    }
+
+    private fun buildWebChromeClient() = object : WebChromeClient() {
+        override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+            if (customView != null) {
+                callback?.onCustomViewHidden()
+                return
+            }
+            customView = view
+            customViewCallback = callback
+            (window.decorView as FrameLayout).addView(customView, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            ))
+            webView.visibility = View.GONE
+            hideSystemUI()
+        }
+
+        override fun onHideCustomView() {
+            if (customView == null) return
+            (window.decorView as FrameLayout).removeView(customView)
+            customView = null
+            customViewCallback?.onCustomViewHidden()
+            webView.visibility = View.VISIBLE
+            hideSystemUI()
         }
     }
 
@@ -218,10 +254,13 @@ class PlayerActivity : AppCompatActivity() {
             javaScriptEnabled               = true
             domStorageEnabled               = true
             databaseEnabled                 = true
+            loadWithOverviewMode            = true
+            useWideViewPort                 = true
+            allowFileAccess                 = true
+            allowContentAccess              = true
             mediaPlaybackRequiresUserGesture = false
             setSupportMultipleWindows(false)
             javaScriptCanOpenWindowsAutomatically = false
-            // Set a common User Agent to avoid some basic bot detection
             userAgentString = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
         }
     }
