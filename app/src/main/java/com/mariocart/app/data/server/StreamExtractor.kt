@@ -42,6 +42,9 @@ object StreamExtractor {
         Regex(""""url"\s*:\s*["']?(https?://[^"'\s,}\]]+\.mp4[^"'\s,}\]]*)""",      RegexOption.IGNORE_CASE),
         Regex("""(https?://[^\s"'<>()\]]+\.m3u8(?:\?[^\s"'<>()\]]*)?)""",           RegexOption.IGNORE_CASE),
         Regex("""(https?://[^\s"'<>()\]]+\.mp4(?:\?[^\s"'<>()\]]*)?)""",            RegexOption.IGNORE_CASE),
+        Regex("""(https?://[^\s"'<>()\]]+playlist\.m3u8(?:\?[^\s"'<>()\]]*)?)""",   RegexOption.IGNORE_CASE),
+        Regex("""(https?://[^\s"'<>()\]]+/hls/[^\s"'<>()\]]*)""",                   RegexOption.IGNORE_CASE),
+        Regex("""(https?://[^\s"'<>()\]]+/proxy/[^\s"'<>()\]]*playlist\.m3u8[^\s"'<>()\]]*)""", RegexOption.IGNORE_CASE),
     )
 
     suspend fun extractDirect(
