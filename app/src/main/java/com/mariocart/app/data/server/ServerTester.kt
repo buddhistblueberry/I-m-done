@@ -11,22 +11,39 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
- * ServerTester — Re-enabled for auto-detection.
+ * ServerTester — Probes servers in parallel and ranks them by latency.
  *
- * Probes servers in parallel to find which ones are currently reachable.
+ * Each server is tested with a timed HEAD request against the actual
+ * content URL. Servers that respond are sorted fastest-first so that
+ * PlayerActivity always tries the quickest reachable server first.
+ *
+ * Servers that fail to respond within the timeout are excluded entirely
+ * unless NO servers respond, in which case the original list is returned
+ * as a safe fallback.
  */
 object ServerTester {
 
     private const val TAG = "ServerTester"
-    
+    private const val CONNECT_TIMEOUT_S = 6L
+    private const val READ_TIMEOUT_S    = 6L
+
     private val client = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
+        .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
+        .readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
 
     /**
-     * Probes each server in parallel and returns a list of working servers.
+     * Probes every server in [servers] in parallel for the given content,
+     * measures each one's response latency, and returns the reachable
+     * servers sorted fastest-first.
+     *
+     * A server is considered "reachable" when it returns HTTP 200, 301,
+     * 302, 403, or any 2xx/3xx code — a 403 typically means the CDN is
+     * alive but requires a real browser session, which is fine for WebView.
+     *
+     * @return Reachable servers sorted by ascending latency, or [servers]
+     *         unchanged if none respond (so playback can still be attempted).
      */
     suspend fun rankForContent(
         servers: List<StreamingServer>,
@@ -35,46 +52,62 @@ object ServerTester {
         season: Int = 1,
         episode: Int = 1
     ): List<StreamingServer> = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Starting auto-detection for ${servers.size} servers...")
-        
-        val results = servers.map { server ->
+
+        Log.d(TAG, "Probing ${servers.size} servers for tmdbId=$tmdbId type=$type ...")
+
+        data class Result(val server: StreamingServer, val latencyMs: Long)
+
+        val results: List<Result> = servers.map { server ->
             async {
-                val url = if (type == "movie") server.movieUrl(tmdbId) 
+                val url = if (type == "movie") server.movieUrl(tmdbId)
                           else server.tvUrl(tmdbId, season, episode)
-                
-                val isWorking = checkServer(url)
-                if (isWorking) {
-                    Log.d(TAG, "✅ Server working: ${server.name}")
-                    server
+                val latency = measureLatency(url)
+                if (latency >= 0) {
+                    Log.d(TAG, "✅ ${server.name} — ${latency}ms")
+                    Result(server, latency)
                 } else {
-                    Log.d(TAG, "❌ Server down: ${server.name}")
+                    Log.d(TAG, "❌ ${server.name} — unreachable")
                     null
                 }
             }
         }.awaitAll().filterNotNull()
 
         if (results.isEmpty()) {
-            Log.w(TAG, "No working servers found during auto-detection. Returning original list.")
+            Log.w(TAG, "No reachable servers found — returning original list as fallback.")
             servers
         } else {
-            Log.d(TAG, "Auto-detection found ${results.size} working servers.")
-            results
+            val ranked = results.sortedBy { it.latencyMs }.map { it.server }
+            Log.d(TAG, "Ranked ${ranked.size} servers: ${ranked.joinToString { it.name }}")
+            ranked
         }
     }
 
-    private fun checkServer(url: String): Boolean {
+    /**
+     * Sends a HEAD request to [url] and returns the round-trip time in
+     * milliseconds, or -1 if the request fails or times out.
+     */
+    private fun measureLatency(url: String): Long {
         return try {
             val request = Request.Builder()
                 .url(url)
-                .head() // Use HEAD request for speed
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .head()
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                    "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                    "Chrome/124.0.0.0 Safari/537.36"
+                )
                 .build()
-            
+
+            val start = System.currentTimeMillis()
             client.newCall(request).execute().use { response ->
-                response.isSuccessful || response.code == 403 // 403 often means it's up but needs browser headers
+                val elapsed = System.currentTimeMillis() - start
+                // Accept any code that indicates the server is alive.
+                // 403 = alive but needs browser context (fine for WebView).
+                if (response.isSuccessful || response.code in 300..403) elapsed else -1L
             }
         } catch (e: Exception) {
-            false
+            -1L
         }
     }
 }

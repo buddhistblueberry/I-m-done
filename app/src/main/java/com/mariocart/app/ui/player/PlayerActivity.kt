@@ -81,6 +81,8 @@ class PlayerActivity : AppCompatActivity() {
     private var currentServerIndex = -1
     private var autoTryServers = true
     private var discoveryJob: kotlinx.coroutines.Job? = null
+    /** Name of the server currently loaded in the WebView, used for health tracking. */
+    private var currentServerName: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -94,6 +96,10 @@ class PlayerActivity : AppCompatActivity() {
         episode     = intent.getIntExtra(EXTRA_EPISODE, 1)
 
         setupLayout()
+        // Initialize server manager (loads servers.json + opens persistent score store)
+        ServerManager.initialize(this)
+        // Clear per-session health so this title starts fresh while keeping persistent scores
+        ServerManager.resetHealth()
         startDiscovery()
     }
 
@@ -218,12 +224,18 @@ class PlayerActivity : AppCompatActivity() {
             // Give each server 15 seconds to find a video before moving to the next
             lifecycleScope.launch {
                 kotlinx.coroutines.delay(15000)
-                if (!isVideoIntercepted && autoTryServers && currentServerIndex < servers.size - 1) {
-                    tryNextServer()
-                } else if (!isVideoIntercepted && currentServerIndex >= servers.size - 1) {
-                    loadingText.text = "All servers tried. Please select manually."
-                    serverButton.visibility = View.VISIBLE
-                    showServerSelection()
+                if (!isVideoIntercepted) {
+                    // Server timed out — mark it dead so it is deprioritised in future
+                    if (server.name.isNotBlank()) {
+                        ServerManager.markServerDead(server.name)
+                    }
+                    if (autoTryServers && currentServerIndex < servers.size - 1) {
+                        tryNextServer()
+                    } else {
+                        loadingText.text = "All servers tried. Please select manually."
+                        serverButton.visibility = View.VISIBLE
+                        showServerSelection()
+                    }
                 }
             }
         } else {
@@ -266,7 +278,6 @@ class PlayerActivity : AppCompatActivity() {
         playerView.visibility = View.GONE
         loadingText.text = "Direct stream unavailable. Switching to manual selection…"
         
-        ServerManager.initialize(this)
         serverButton.visibility = View.VISIBLE
         showServerSelection()
     }
@@ -293,8 +304,9 @@ class PlayerActivity : AppCompatActivity() {
             server.tvUrl(tmdbId, season, episode)
         }
 
+        currentServerName = server.name
         isVideoIntercepted = false
-        
+
         // If we're playing something, stop it
         exoPlayer?.stop()
         playerView.visibility = View.GONE
@@ -341,14 +353,19 @@ class PlayerActivity : AppCompatActivity() {
     private fun handleInterceptedVideo(url: String) {
         if (isVideoIntercepted) return
         isVideoIntercepted = true
-        
+
         Log.d("PlayerActivity", "Intercepted video URL: $url")
-        
+
+        // Mark the server that delivered this stream as successful
+        if (currentServerName.isNotBlank()) {
+            ServerManager.markServerSuccess(currentServerName)
+        }
+
         // Stop WebView
         webView.stopLoading()
         webView.loadUrl("about:blank")
         webView.visibility = View.GONE
-        
+
         // Play natively
         playNative(url)
     }
