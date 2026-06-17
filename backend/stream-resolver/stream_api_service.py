@@ -1,183 +1,173 @@
 """
-Stream API Service v5.0
+Stream API Service v6.0
 =======================
 
-Multi-provider service with server listing, hybrid extraction, and ad/redirect blocking.
+WebView-only, manual-selection backend.
+
+Changes from v5:
+- /api/servers now returns { success, servers, total } matching the Android
+  StreamingBackendClient contract (was returning a plain list).
+- Added /api/embed endpoint that builds and returns an embed URL for the
+  chosen server — no auto-selection, no parallel probing.
+- Removed all auto-ranking / probing logic.
+- Query params now use camelCase (serverId, tmdbId, type) to match the
+  Android Retrofit interface.
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict
-import httpx
 import re
 import logging
-from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class VideoSource(BaseModel):
-    url: str
-    format: str
-    server: str
-    headers: Dict[str, str] = {}
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
 
-class ServerOption(BaseModel):
+class StreamServer(BaseModel):
     id: str
     name: str
-    type: str # "direct" or "embed"
-    embed_url: Optional[str] = None
+    type: str  # "embed"
 
-class StreamResponse(BaseModel):
+class ServersResponse(BaseModel):
     success: bool
-    stream: Optional[VideoSource] = None
-    servers: List[ServerOption] = []
-    time_ms: float = 0
+    servers: List[StreamServer]
+    total: int
 
-app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+class EmbedResponse(BaseModel):
+    success: bool
+    embedUrl: Optional[str] = None
+    serverId: Optional[str] = None
+    error: Optional[str] = None
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+class HealthResponse(BaseModel):
+    status: str
 
-# Ad and tracker patterns to block
-AD_PATTERNS = [
-    r"doubleclick", r"googlesyndication", r"adservice", r"ads\.", r"ad-", r"advert",
-    r"analytics", r"tracking", r"facebook\.com/tr", r"google-analytics", r"mixpanel",
-    r"amplitude", r"segment\.com", r"intercom", r"drift\.com", r"hotjar", r"fullstory"
+# ---------------------------------------------------------------------------
+# Server registry
+# ---------------------------------------------------------------------------
+
+# Each entry: id, name, base embed URL template.
+# {path} is replaced with "movie/{tmdbId}" or "tv/{tmdbId}/{season}/{episode}".
+SERVER_REGISTRY = [
+    {"id": "vidsrc_to",    "name": "VidSrc.to",    "base": "https://vidsrc.to/embed/{path}"},
+    {"id": "vidsrc_me",    "name": "VidSrc.me",    "base": "https://vidsrc.me/embed/{path}"},
+    {"id": "vidlink",      "name": "VidLink",       "base": "https://vidlink.pro/{path}"},
+    {"id": "vidsrc_pro",   "name": "VidSrc.pro",   "base": "https://vidsrc.pro/embed/{path}"},
+    {"id": "videasy",      "name": "Videasy",       "base": "https://player.videasy.net/{path}"},
+    {"id": "autoembed",    "name": "AutoEmbed",     "base": "https://autoembed.cc/embed/{path}"},
+    {"id": "superembed",   "name": "SuperEmbed",    "base": "https://superembed.stream/embed/{path}"},
+    {"id": "embed_su",     "name": "Embed.su",      "base": "https://embed.su/embed/{path}"},
+    {"id": "2embed",       "name": "2Embed.cc",     "base": "https://www.2embed.cc/embed/{path}"},
+    {"id": "smashystream", "name": "SmashyStream",  "base": "https://smashystream.com/embed/{path}"},
+    {"id": "vidbinge",     "name": "VidBinge",      "base": "https://vidbinge.dev/embed/{path}"},
+    {"id": "flixembed",    "name": "FlixEmbed",     "base": "https://flixembed.net/embed/{path}"},
+    {"id": "multiembed",   "name": "Multiembed",    "base": "https://multiembed.mov/embed/{path}"},
+    {"id": "vidcloud",     "name": "VidCloud",      "base": "https://vidcloud.co/embed/{path}"},
+    {"id": "streamwish",   "name": "StreamWish",    "base": "https://streamwish.to/embed/{path}"},
+    {"id": "filemoon",     "name": "FileMoon",      "base": "https://filemoon.sx/embed/{path}"},
+    {"id": "doodstream",   "name": "DoodStream",    "base": "https://dood.to/embed/{path}"},
+    {"id": "streamtape",   "name": "StreamTape",    "base": "https://streamtape.com/embed/{path}"},
+    {"id": "mixdrop",      "name": "MixDrop",       "base": "https://mixdrop.ag/embed/{path}"},
+    {"id": "cinezone",     "name": "CineZone",      "base": "https://cinezone.to/embed/{path}"},
+    {"id": "sflix",        "name": "SFlix",         "base": "https://sflix.to/embed/{path}"},
+    {"id": "lookmovie",    "name": "LookMovie",     "base": "https://lookmovie2.to/embed/{path}"},
+    {"id": "filmcave",     "name": "FilmCave",      "base": "https://filmcave.ru/embed/{path}"},
+    {"id": "flixhq",       "name": "FlixHQ",        "base": "https://flixhq.click/embed/{path}"},
+    {"id": "watchseries",  "name": "WatchSeries",   "base": "https://watchseries.im/embed/{path}"},
+    {"id": "theflixer",    "name": "TheFlixer",     "base": "https://theflixer.tv/embed/{path}"},
+    {"id": "novacinema",   "name": "NovaCinema",    "base": "https://novacinema.app/embed/{path}"},
+    {"id": "cinehd",       "name": "CineHD",        "base": "https://cinehd.xyz/embed/{path}"},
+    {"id": "player_vip",   "name": "Player.vip",    "base": "https://player.vip/embed/{path}"},
+    {"id": "movembed",     "name": "MovEmbed",      "base": "https://movembed.cc/embed/{path}"},
+    {"id": "netstream",    "name": "NetStream",     "base": "https://netstream.me/embed/{path}"},
+    {"id": "streamm4u",    "name": "StreamM4u",     "base": "https://streamm4u.app/embed/{path}"},
+    {"id": "embedhub",     "name": "EmbedHub",      "base": "https://embedhub.xyz/embed/{path}"},
 ]
 
-REDIRECT_PATTERNS = [
-    r"bit\.ly", r"tinyurl", r"short\.link", r"adf\.ly", r"linkvertise",
-    r"freebitco\.in", r"clck\.ru", r"adfly", r"shorte\.st", r"ouo\.io"
-]
+def _content_path(tmdb_id: int, content_type: str, season: int, episode: int) -> str:
+    """Build the path segment used in embed URLs."""
+    if content_type == "movie":
+        return f"movie/{tmdb_id}"
+    return f"tv/{tmdb_id}/{season}/{episode}"
 
-def is_blocked_url(url: str) -> bool:
-    """Check if URL is an ad, tracker, or redirect."""
-    url_lower = url.lower()
-    
-    for pattern in AD_PATTERNS:
-        if re.search(pattern, url_lower):
-            return True
-    
-    for pattern in REDIRECT_PATTERNS:
-        if re.search(pattern, url_lower):
-            return True
-    
-    return False
+def _build_embed_url(server: dict, tmdb_id: int, content_type: str, season: int, episode: int) -> str:
+    path = _content_path(tmdb_id, content_type, season, episode)
+    return server["base"].replace("{path}", path)
 
-def clean_html_response(html: str) -> str:
-    """Remove ad scripts, tracking pixels, and popups from HTML."""
-    # Remove script tags for ads and trackers
-    html = re.sub(r'<script[^>]*(?:src=["\'](?:https?:)?//[^"\']*(?:ad|track|analytics|doubleclick)[^"\']*["\'])?[^>]*>.*?</script>', '', html, flags=re.IGNORECASE | re.DOTALL)
-    
-    # Remove tracking pixels
-    html = re.sub(r'<img[^>]*(?:src=["\'](?:https?:)?//[^"\']*(?:tracking|analytics|doubleclick)[^"\']*["\'])?[^>]*/?\s*>', '', html, flags=re.IGNORECASE)
-    
-    # Remove ad iframes
-    html = re.sub(r'<iframe[^>]*(?:src=["\'](?:https?:)?//[^"\']*(?:ad|doubleclick)[^"\']*["\'])?[^>]*>.*?</iframe>', '', html, flags=re.IGNORECASE | re.DOTALL)
-    
-    # Remove popup/overlay divs
-    html = re.sub(r'<div[^>]*(?:class|id)=["\'](?:[^"\']*(?:popup|overlay|ad|modal)[^"\']*)["\'][^>]*>.*?</div>', '', html, flags=re.IGNORECASE | re.DOTALL)
-    
-    return html
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 
-async def extract_vidlink(tmdb_id: int, is_movie: bool, season: int, episode: int) -> Optional[VideoSource]:
-    try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
-            base = "https://vidlink.pro"
-            path = f"/movie/{tmdb_id}" if is_movie else f"/tv/{tmdb_id}/{season}/{episode}"
-            resp = await client.get(base + path)
-            
-            # Clean response
-            clean_resp = clean_html_response(resp.text)
-            
-            match = re.search(r'https://vidlink\.pro/api/b/(movie|tv)/([a-zA-Z0-9]+)', clean_resp)
-            if not match: 
-                return None
-            
-            api_resp = await client.get(match.group(0), headers={"Referer": base + path})
-            data = api_resp.json()
-            
-            if "stream" in data and "playlist" in data["stream"]:
-                return VideoSource(
-                    url=data["stream"]["playlist"],
-                    format="hls",
-                    server="VidLink",
-                    headers={"referer": "https://vidlink.pro/", "origin": "https://vidlink.pro"}
-                )
-    except Exception as e:
-        logger.error(f"VidLink extraction error: {e}")
-    
-    return None
+app = FastAPI(title="I'm Done Streaming API", version="6.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-async def extract_vidsrc(tmdb_id: int, is_movie: bool, season: int, episode: int) -> Optional[VideoSource]:
-    try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
-            base = "https://vidsrc.pro"
-            path = f"/api/source/movie/{tmdb_id}" if is_movie else f"/api/source/tv/{tmdb_id}/{season}/{episode}"
-            
-            resp = await client.get(base + path, headers={"Referer": base})
-            data = resp.json()
-            
-            if data.get("status") == 200 and "result" in data:
-                for source in data["result"]:
-                    if source.get("type") == "hls":
-                        return VideoSource(
-                            url=source["url"],
-                            format="hls",
-                            server="VidSrc.pro",
-                            headers={"referer": base}
-                        )
-    except Exception as e:
-        logger.error(f"VidSrc extraction error: {e}")
-    
-    return None
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
-@app.get("/api/servers")
-async def list_servers(tmdb_id: int, content_type: str = "movie", season: int = 1, episode: int = 1):
-    """List available servers for manual selection (no auto-selection)."""
-    is_movie = content_type == "movie"
-    path = f"movie/{tmdb_id}" if is_movie else f"tv/{tmdb_id}/{season}/{episode}"
-    
-    servers = [
-        ServerOption(id="vidlink", name="VidLink (Fast)", type="direct", embed_url=f"https://vidlink.pro/{path}"),
-        ServerOption(id="vidsrc_pro", name="VidSrc.pro", type="embed", embed_url=f"https://vidsrc.pro/embed/{path}"),
-        ServerOption(id="vidsrc_to", name="VidSrc.to", type="embed", embed_url=f"https://vidsrc.to/embed/{path}"),
-        ServerOption(id="vidsrc_me", name="VidSrc.me", type="embed", embed_url=f"https://vidsrc.me/embed/{path}"),
-        ServerOption(id="videasy", name="Videasy", type="embed", embed_url=f"https://player.videasy.net/{path}"),
-        ServerOption(id="autoembed", name="AutoEmbed", type="embed", embed_url=f"https://autoembed.cc/embed/{path}"),
-        ServerOption(id="superembed", name="SuperEmbed", type="embed", embed_url=f"https://superembed.stream/embed/{path}"),
-        ServerOption(id="lookmovie", name="LookMovie", type="embed", embed_url=f"https://lookmovie2.to/embed/{path}"),
-        ServerOption(id="embed_su", name="Embed.su", type="embed", embed_url=f"https://embed.su/embed/{path}"),
-    ]
-    
-    return servers
-
-@app.get("/api/stream")
-async def get_stream(server: str, tmdb_id: int, content_type: str = "movie", season: int = 1, episode: int = 1):
-    """Extract direct stream URL from server (requires manual server selection first)."""
-    start_time = datetime.now()
-    is_movie = content_type == "movie"
-    
-    source = None
-    
-    if server == "vidlink":
-        source = await extract_vidlink(tmdb_id, is_movie, season, episode)
-    elif server == "vidsrc_pro":
-        source = await extract_vidsrc(tmdb_id, is_movie, season, episode)
-    
-    elapsed = (datetime.now() - start_time).total_seconds() * 1000
-    return StreamResponse(success=source is not None, stream=source, time_ms=elapsed)
-
-@app.post("/api/validate-url")
-async def validate_url(url: str):
-    """Check if a URL is blocked (ad/redirect)."""
-    return {"blocked": is_blocked_url(url), "url": url}
-
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 async def health():
-    return {"status": "ok"}
+    """Health check."""
+    return HealthResponse(status="ok")
+
+
+@app.get("/api/servers", response_model=ServersResponse)
+async def list_servers():
+    """
+    Return the full list of available streaming servers.
+
+    The Android client calls this endpoint to populate the manual server
+    selection dialog.  No auto-selection or probing is performed here.
+    """
+    servers = [
+        StreamServer(id=s["id"], name=s["name"], type="embed")
+        for s in SERVER_REGISTRY
+    ]
+    return ServersResponse(success=True, servers=servers, total=len(servers))
+
+
+@app.get("/api/embed", response_model=EmbedResponse)
+async def get_embed(
+    serverId: str,
+    tmdbId: int,
+    type: str = "movie",
+    season: Optional[int] = 1,
+    episode: Optional[int] = 1,
+):
+    """
+    Return the embed URL for the user-selected server.
+
+    This endpoint is called AFTER the user has manually chosen a server.
+    It simply constructs and returns the embed URL — no extraction, no
+    auto-selection, no parallel probing.
+    """
+    server = next((s for s in SERVER_REGISTRY if s["id"] == serverId), None)
+    if server is None:
+        return EmbedResponse(
+            success=False,
+            error=f"Unknown server id: {serverId}",
+        )
+
+    embed_url = _build_embed_url(
+        server,
+        tmdb_id=tmdbId,
+        content_type=type,
+        season=season or 1,
+        episode=episode or 1,
+    )
+    logger.info(f"Embed URL for {serverId}: {embed_url}")
+    return EmbedResponse(success=True, embedUrl=embed_url, serverId=serverId)
+
 
 if __name__ == "__main__":
     import uvicorn
