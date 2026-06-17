@@ -23,14 +23,11 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.mariocart.app.data.model.StreamingServer
-import com.mariocart.app.data.server.ServerManager
+import com.mariocart.app.data.api.ApiClient
+import com.mariocart.app.data.api.StreamServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.util.concurrent.TimeUnit
 
 class PlayerActivity : AppCompatActivity() {
 
@@ -56,10 +53,11 @@ class PlayerActivity : AppCompatActivity() {
     private var season = 1
     private var episode = 1
     private var videoTitle = ""
+    private var availableServers: List<StreamServer> = emptyList()
     
     private lateinit var webView: WebView
     private lateinit var loadingOverlay: FrameLayout
-    private val httpClient = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).build()
+    private lateinit var loadingText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,7 +72,7 @@ class PlayerActivity : AppCompatActivity() {
         episode = intent.getIntExtra(EXTRA_EPISODE, 1)
 
         setupLayout()
-        showServerSelection()
+        fetchServersAndShowSelection()
     }
 
     private fun setupLayout() {
@@ -89,13 +87,16 @@ class PlayerActivity : AppCompatActivity() {
             setupCleanWebView(this)
         }
 
+        loadingText = TextView(this).apply {
+            text = "Loading servers..."
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            textSize = 18f
+        }
+
         loadingOverlay = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
-            addView(TextView(context).apply {
-                text = "Select a server to play"
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER
-            })
+            addView(loadingText)
         }
 
         root.addView(webView)
@@ -103,36 +104,70 @@ class PlayerActivity : AppCompatActivity() {
         setContentView(root)
     }
 
+    private fun fetchServersAndShowSelection() {
+        lifecycleScope.launch {
+            try {
+                loadingText.text = "Fetching available servers..."
+                val response = withContext(Dispatchers.IO) {
+                    ApiClient.streamingBackendApi.getServers()
+                }
+
+                if (response.success) {
+                    availableServers = response.servers
+                    showServerSelection()
+                } else {
+                    showError("Failed to fetch servers")
+                }
+            } catch (e: Exception) {
+                showError("Error fetching servers: ${e.message}")
+            }
+        }
+    }
+
     private fun showServerSelection() {
-        val servers = ServerManager.getOrderedServers()
-        
-        if (servers.isEmpty()) {
+        if (availableServers.isEmpty()) {
             showError("No streaming servers available")
             return
         }
 
-        val serverNames = servers.map { it.name }.toTypedArray()
+        val serverNames = availableServers.map { it.name }.toTypedArray()
         
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Select Server")
             .setCancelable(false)
             .setItems(serverNames) { _, which ->
-                val selectedServer = servers[which]
+                val selectedServer = availableServers[which]
                 playOnServer(selectedServer)
             }
             .setNegativeButton("Cancel") { _, _ -> finish() }
             .show()
     }
 
-    private fun playOnServer(server: StreamingServer) {
-        val embedUrl = if (contentType == "movie") {
-            "${server.baseUrl}/movie/$tmdbId"
-        } else {
-            "${server.baseUrl}/tv/$tmdbId/$season/$episode"
+    private fun playOnServer(server: StreamServer) {
+        lifecycleScope.launch {
+            try {
+                loadingOverlay.visibility = View.VISIBLE
+                loadingText.text = "Loading ${server.name}..."
+
+                val embedResponse = withContext(Dispatchers.IO) {
+                    ApiClient.streamingBackendApi.getEmbed(
+                        serverId = server.id,
+                        tmdbId = tmdbId,
+                        type = contentType,
+                        season = if (contentType == "tv") season else null,
+                        episode = if (contentType == "tv") episode else null
+                    )
+                }
+
+                if (embedResponse.success && embedResponse.embedUrl != null) {
+                    switchToWebView(embedResponse.embedUrl)
+                } else {
+                    showError("Failed to load stream from ${server.name}")
+                }
+            } catch (e: Exception) {
+                showError("Error loading stream: ${e.message}")
+            }
         }
-        
-        loadingOverlay.visibility = View.VISIBLE
-        switchToWebView(embedUrl)
     }
 
     private fun switchToWebView(url: String) {
@@ -253,11 +288,17 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun showError(message: String) {
-        AlertDialog.Builder(this)
-            .setTitle("Error")
-            .setMessage(message)
-            .setPositiveButton("OK") { _, _ -> finish() }
-            .show()
+        loadingOverlay.visibility = View.VISIBLE
+        loadingText.text = message
+        loadingText.setTextColor(Color.RED)
+        
+        Handler(Looper.getMainLooper()).postDelayed({
+            AlertDialog.Builder(this)
+                .setTitle("Error")
+                .setMessage(message)
+                .setPositiveButton("OK") { _, _ -> finish() }
+                .show()
+        }, 1000)
     }
 
     override fun onDestroy() {
