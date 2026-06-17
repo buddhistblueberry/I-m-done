@@ -29,6 +29,7 @@ import com.mariocart.app.data.api.ApiClient
 import com.mariocart.app.data.model.StreamingServer
 import com.mariocart.app.data.server.ServerManager
 import com.mariocart.app.data.server.ServerTester
+import com.mariocart.app.data.server.StreamExtractor
 import kotlinx.coroutines.launch
 
 /**
