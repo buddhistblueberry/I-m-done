@@ -89,14 +89,17 @@ class ContentRepository {
             filterValidMovies(enriched)
         }.getOrDefault(emptyList())
 
-    private suspend fun enrichWithRuntime(items: List<TmdbItem>): List<TmdbItem> =
+    private suspend fun enrichWithRuntime(items: List<TmdbItem>): List<TmdbItem> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         items.map { item ->
-            if (item.isMovie && item.runtime == null) {
-                runCatching { api.getMovieDetails(item.id, key) }.getOrNull() ?: item
-            } else {
-                item
+            kotlinx.coroutines.async {
+                if (item.isMovie && item.runtime == null) {
+                    runCatching { api.getMovieDetails(item.id, key) }.getOrNull() ?: item
+                } else {
+                    item
+                }
             }
-        }
+        }.kotlinx.coroutines.awaitAll()
+    }
 
     suspend fun getNowPlaying(page: Int = 1): List<TmdbItem> =
         runCatching {
