@@ -79,21 +79,45 @@ class ContentRepository {
             (it.originalLanguage == null || it.originalLanguage == "en") && it.posterPath != null
         }
 
+    private fun filterValidMovies(items: List<TmdbItem>): List<TmdbItem> =
+        items.filter { it.isValidMovie }
+
     suspend fun getTrending(page: Int = 1): List<TmdbItem> =
-        runCatching { filterEnglish(api.getTrending(key, page = page).results) }
-            .getOrDefault(emptyList())
+        runCatching {
+            val items = filterEnglish(api.getTrending(key, page = page).results)
+            val enriched = enrichWithRuntime(items)
+            filterValidMovies(enriched)
+        }.getOrDefault(emptyList())
+
+    private suspend fun enrichWithRuntime(items: List<TmdbItem>): List<TmdbItem> =
+        items.map { item ->
+            if (item.isMovie && item.runtime == null) {
+                runCatching { api.getMovieDetails(item.id, key) }.getOrNull() ?: item
+            } else {
+                item
+            }
+        }
 
     suspend fun getNowPlaying(page: Int = 1): List<TmdbItem> =
-        runCatching { filterEnglish(api.getNowPlaying(key, page = page).results) }
-            .getOrDefault(emptyList())
+        runCatching {
+            val items = filterEnglish(api.getNowPlaying(key, page = page).results)
+            val enriched = enrichWithRuntime(items)
+            filterValidMovies(enriched)
+        }.getOrDefault(emptyList())
 
     suspend fun getPopularMovies(page: Int = 1): List<TmdbItem> =
-        runCatching { filterEnglish(api.getPopularMovies(key, page = page).results) }
-            .getOrDefault(emptyList())
+        runCatching {
+            val items = filterEnglish(api.getPopularMovies(key, page = page).results)
+            val enriched = enrichWithRuntime(items)
+            filterValidMovies(enriched)
+        }.getOrDefault(emptyList())
 
     suspend fun getTopRatedMovies(page: Int = 1): List<TmdbItem> =
-        runCatching { filterEnglish(api.getTopRatedMovies(key, page = page).results) }
-            .getOrDefault(emptyList())
+        runCatching {
+            val items = filterEnglish(api.getTopRatedMovies(key, page = page).results)
+            val enriched = enrichWithRuntime(items)
+            filterValidMovies(enriched)
+        }.getOrDefault(emptyList())
 
     suspend fun getPopularTV(page: Int = 1): List<TmdbItem> =
         runCatching { filterEnglish(api.getPopularTV(key, page = page).results) }
@@ -117,7 +141,9 @@ class ContentRepository {
         page: Int = 1
     ): List<TmdbItem> =
         runCatching {
-            filterEnglish(api.discover(type, key, genreId, sortBy = sortBy, page = page).results)
+            val items = filterEnglish(api.discover(type, key, genreId, sortBy = sortBy, page = page).results)
+            val enriched = enrichWithRuntime(items)
+            filterValidMovies(enriched)
         }.getOrDefault(emptyList())
 
     suspend fun search(
@@ -127,6 +153,8 @@ class ContentRepository {
         page: Int = 1
     ): List<TmdbItem> =
         runCatching {
-            filterEnglish(api.search(type, key, query, year = year, page = page).results)
+            val items = filterEnglish(api.search(type, key, query, year = year, page = page).results)
+            val enriched = enrichWithRuntime(items)
+            filterValidMovies(enriched)
         }.getOrDefault(emptyList())
 }

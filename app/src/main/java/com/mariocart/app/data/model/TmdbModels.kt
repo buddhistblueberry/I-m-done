@@ -21,7 +21,8 @@ data class TmdbItem(
     @SerializedName("first_air_date") val firstAirDate: String? = null,
     @SerializedName("original_language") val originalLanguage: String? = null,
     @SerializedName("media_type") val mediaType: String? = null,
-    @SerializedName("genre_ids") val genreIds: List<Int> = emptyList()
+    @SerializedName("genre_ids") val genreIds: List<Int> = emptyList(),
+    val runtime: Int? = null             // movie runtime in minutes
 ) {
     val displayTitle: String get() = title ?: name ?: "Unknown"
     val year: String get() = (releaseDate ?: firstAirDate ?: "").take(4)
@@ -36,6 +37,9 @@ data class TmdbItem(
 
     val ratingText: String
         get() = if (voteAverage > 0) String.format("%.1f", voteAverage) else ""
+
+    val isValidMovie: Boolean
+        get() = isMovie // All videos identified as movies are valid
 }
 
 data class TvSeasonsResponse(
