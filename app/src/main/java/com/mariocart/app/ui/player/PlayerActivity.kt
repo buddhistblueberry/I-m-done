@@ -189,7 +189,20 @@ class PlayerActivity : AppCompatActivity() {
     private fun tryNextServer() {
         if (!autoTryServers) return
         
-        val servers = ServerManager.getOrderedServers()
+        lifecycleScope.launch {
+            val allServers = ServerManager.getOrderedServers()
+            val servers = if (currentServerIndex == -1) {
+                loadingText.text = "Auto-detecting working servers..."
+                ServerTester.rankForContent(allServers, tmdbId, contentType, season, episode)
+            } else {
+                allServers
+            }
+            
+            continueWithServers(servers)
+        }
+    }
+
+    private fun continueWithServers(servers: List<StreamingServer>) {
         currentServerIndex++
         
         if (currentServerIndex < servers.size) {

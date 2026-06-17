@@ -58,7 +58,17 @@ data class StreamingServer(
     val name: String,
     val baseUrl: String
 ) {
-    fun movieUrl(tmdbId: Int): String = "$baseUrl/movie/$tmdbId"
-    fun tvUrl(tmdbId: Int, season: Int, episode: Int): String =
-        "$baseUrl/tv/$tmdbId/$season/$episode"
+    fun movieUrl(tmdbId: Int): String {
+        return when {
+            baseUrl.contains("vidlink.pro") -> "$baseUrl/$tmdbId"
+            else -> "$baseUrl/movie/$tmdbId"
+        }
+    }
+
+    fun tvUrl(tmdbId: Int, season: Int, episode: Int): String {
+        return when {
+            baseUrl.contains("vidlink.pro") -> "$baseUrl/$tmdbId/$season/$episode"
+            else -> "$baseUrl/tv/$tmdbId/$season/$episode"
+        }
+    }
 }
