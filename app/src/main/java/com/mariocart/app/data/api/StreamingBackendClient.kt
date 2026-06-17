@@ -34,6 +34,7 @@ data class StreamResponse(
     val url: String? = null,
     val serverId: String? = null,
     val contentType: String? = null,
+    val isDirect: Boolean? = null,
     val headers: Map<String, String>? = null,
     val error: String? = null,
 )
