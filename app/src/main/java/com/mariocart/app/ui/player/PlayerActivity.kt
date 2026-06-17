@@ -186,14 +186,31 @@ class PlayerActivity : AppCompatActivity() {
         discoveryJob?.cancel()
         discoveryJob = lifecycleScope.launch {
             try {
-                loadingText.text = "Checking direct sources..."
-                val response = ApiClient.streamingBackendApi.getStream("vidlink", tmdbId, contentType, season, episode)
+                loadingText.text = "Probing for clean streams..."
+                // Call our advanced backend resolver
+                val response = ApiClient.streamingBackendApi.getStream(tmdbId, contentType, season, episode)
                 if (response.success && response.url != null) {
-                    playNative(response.url)
+                    if (response.url.contains(".m3u8") || response.url.contains(".mp4")) {
+                        // If it's a direct file, play natively immediately
+                        playNative(response.url)
+                    } else {
+                        // If it's an embed, load it in the background and try to extract
+                        currentServerName = response.serverId ?: "Auto"
+                        loadingText.text = "Direct file not found. Extracting from ${currentServerName}..."
+                        
+                        val directUrl = StreamExtractor.extract(response.url, tmdbId, contentType, season, episode)
+                        if (directUrl != null) {
+                            playNative(directUrl)
+                        } else {
+                            // Last resort: Load the verified clean embed in WebView
+                            loadServerInWebView(StreamingServer(currentServerName, response.url))
+                        }
+                    }
                 } else {
                     tryNextServer()
                 }
             } catch (e: Exception) {
+                Log.e("PlayerActivity", "Discovery Error: ${e.message}")
                 tryNextServer()
             }
         }

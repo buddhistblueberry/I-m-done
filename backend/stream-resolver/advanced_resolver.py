@@ -24,27 +24,19 @@ class AdvancedStreamResolver:
             base_url += f"/{season}/{episode}"
             
         try:
-            async with httpx.AsyncClient(headers=self.headers, follow_redirects=True, timeout=10.0) as client:
-                # 1. Get the embed page
-                resp = await client.get(base_url)
-                if resp.status_code != 200:
-                    return None
-                
-                # In a real scraper, we would follow the internal API calls.
-                # For this implementation, we verify the page contains the player.
-                if "vidsrc.to" in resp.text or "player" in resp.text:
-                    return {
-                        "url": base_url,
-                        "serverId": "vidsrc_to",
-                        "quality": "1080p",
-                        "clean": True
-                    }
+            # For 2026, we return the embed URL to trigger the app's interceptor
+            return {
+                "url": base_url,
+                "serverId": "vidsrc_to",
+                "isDirect": False
+            }
         except Exception:
             pass
         return None
 
     async def resolve_vidlink(self, tmdb_id: str, content_type: str = "movie", season: int = 1, episode: int = 1) -> Optional[Dict]:
         """Resolve vidlink.pro direct stream by attempting to find the actual .m3u8 file."""
+        # Correct API structure for 2026
         api_url = f"https://vidlink.pro/api/b/{content_type}/{tmdb_id}"
         if content_type == "tv":
             api_url += f"/{season}/{episode}"
@@ -54,21 +46,17 @@ class AdvancedStreamResolver:
                 resp = await client.get(api_url)
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Check for direct file in the JSON response
-                    if "stream" in data and data["stream"]:
+                    stream_url = data.get("stream") or data.get("url")
+                    if stream_url and (".m3u8" in stream_url or ".mp4" in stream_url):
                         return {
-                            "url": data["stream"],
+                            "url": stream_url,
                             "serverId": "vidlink_direct",
-                            "quality": "1080p",
-                            "clean": True,
                             "isDirect": True
                         }
-                    # Fallback to embed if direct not found in API
+                    
                     return {
-                        "url": f"https://vidlink.pro/{content_type}/{tmdb_id}" + (f"/{season}/{episode}" if content_type == "tv" else ""),
+                        "url": f"https://vidlink.pro/movie/{tmdb_id}" if content_type == "movie" else f"https://vidlink.pro/tv/{tmdb_id}/{season}/{episode}",
                         "serverId": "vidlink_embed",
-                        "quality": "Auto",
-                        "clean": True,
                         "isDirect": False
                     }
         except Exception:
@@ -82,15 +70,32 @@ class AdvancedStreamResolver:
             base_url += f"/{season}/{episode}"
             
         try:
+            return {
+                "url": base_url,
+                "serverId": "vidsrc_embed_ru",
+                "isDirect": False
+            }
+        except Exception:
+            pass
+        return None
+
+    async def resolve_vidsrc_me(self, tmdb_id: str, content_type: str = "movie", season: int = 1, episode: int = 1) -> Optional[Dict]:
+        """Resolve vidsrc.me direct stream."""
+        api_url = f"https://vidsrc.me/api/source/{content_type}/{tmdb_id}"
+        if content_type == "tv":
+            api_url += f"/{season}/{episode}"
+            
+        try:
             async with httpx.AsyncClient(headers=self.headers, follow_redirects=True, timeout=10.0) as client:
-                resp = await client.get(base_url)
+                resp = await client.get(api_url)
                 if resp.status_code == 200:
-                    return {
-                        "url": base_url,
-                        "serverId": "vidsrc_embed_ru",
-                        "quality": "1080p",
-                        "clean": True
-                    }
+                    data = resp.json()
+                    if "url" in data and data["url"].endswith(".m3u8"):
+                        return {
+                            "url": data["url"],
+                            "serverId": "vidsrc_me_direct",
+                            "isDirect": True
+                        }
         except Exception:
             pass
         return None
@@ -99,9 +104,9 @@ class AdvancedStreamResolver:
         """Try all resolvers and return the cleanest working one, prioritizing direct links."""
         tmdb_str = str(tmdb_id)
         
-        # Priority list for cleanest experience (Direct Links First)
         resolvers = [
             self.resolve_vidlink,
+            self.resolve_vidsrc_me,
             self.resolve_vidsrc_to,
             self.resolve_vidsrc_embed_ru
         ]
@@ -110,10 +115,8 @@ class AdvancedStreamResolver:
         for resolver in resolvers:
             result = await resolver(tmdb_str, content_type, season, episode)
             if result:
-                # If we found a direct link, return it immediately
                 if result.get("isDirect", False):
                     return result
                 results.append(result)
         
-        # If no direct link found, return the first available embed
         return results[0] if results else None

@@ -83,10 +83,10 @@ interface StreamingBackendApi {
      */
     @GET("api/stream")
     suspend fun getStream(
-        @Query("serverId") serverId: String,
         @Query("tmdbId") tmdbId: Int,
         @Query("type") type: String,
         @Query("season") season: Int? = null,
         @Query("episode") episode: Int? = null,
+        @Query("serverId") serverId: String? = null,
     ): StreamResponse
 }
