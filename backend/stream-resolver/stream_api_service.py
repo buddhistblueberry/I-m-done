@@ -6,8 +6,10 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 import time
 import logging
+from advanced_resolver import AdvancedStreamResolver
 
 logging.basicConfig(level=logging.INFO)
+resolver = AdvancedStreamResolver()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="I'm Done Streaming API", version="6.2")
@@ -148,22 +150,32 @@ async def get_stream(
     episode: Optional[int] = 1
 ):
     """
-    Auto-detect working servers by probing them in parallel.
+    Auto-detect working servers by probing them in parallel, 
+    bypassing ads and redirects using the advanced resolver.
     """
+    # 1. Try advanced resolver first for a clean experience
+    clean_result = await resolver.get_clean_stream(tmdbId, type, season or 1, episode or 1)
+    if clean_result:
+        logger.info(f"Clean stream detected via {clean_result['serverId']}")
+        return {
+            "success": True,
+            "url": clean_result["url"],
+            "serverId": clean_result["serverId"],
+            "contentType": "text/html"
+        }
+
+    # 2. Fallback to standard probing if advanced resolution fails
     async with httpx.AsyncClient(timeout=10.0) as client:
-        # Prioritize faster/more reliable servers (verified working in 2026)
         priority_servers = [s for s in SERVERS if s["id"] in ["vidsrc_embed_ru", "vidlink", "vsembed_ru", "vidsrc_to"]]
         other_servers = [s for s in SERVERS if s["id"] not in ["vidsrc_embed_ru", "vidlink", "vsembed_ru", "vidsrc_to"]]
         
         all_to_try = priority_servers + other_servers
-        
         tasks = [extract_stream(client, s, tmdbId, type, season or 1, episode or 1) for s in all_to_try]
         
-        # Return the first one that responds successfully
         for completed in asyncio.as_completed(tasks):
             result = await completed
             if result:
-                logger.info(f"Auto-detected working stream via {result['serverId']}")
+                logger.info(f"Auto-detected fallback stream via {result['serverId']}")
                 return {
                     "success": True,
                     "url": result["url"],
