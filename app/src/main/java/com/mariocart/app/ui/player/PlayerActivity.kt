@@ -18,6 +18,9 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.mariocart.app.data.api.ApiClient
 import com.mariocart.app.data.model.StreamingServer
@@ -166,7 +169,7 @@ class PlayerActivity : AppCompatActivity() {
                 
                 if (response.success && response.url != null) {
                     if (response.isDirect == true || response.url.contains(".m3u8") || response.url.contains(".mp4")) {
-                        playNative(response.url)
+                        playNative(response.url, response.headers)
                     } else {
                         // If backend gave an embed, try to extract it natively
                         loadingText.text = "Extracting video from ${response.serverId}..."
@@ -233,7 +236,7 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun playNative(url: String) {
+    private fun playNative(url: String, headers: Map<String, String>? = null) {
         runOnUiThread {
             loadingOverlay.visibility = View.GONE
             playerView.visibility = View.VISIBLE
@@ -242,9 +245,21 @@ class PlayerActivity : AppCompatActivity() {
             if (exoPlayer != null) {
                 exoPlayer?.release()
             }
+
+            val requestHeaders = playbackHeaders(url, headers)
+            val dataSourceFactory = DefaultHttpDataSource.Factory()
+                .setAllowCrossProtocolRedirects(true)
+                .setDefaultRequestProperties(requestHeaders)
+            val mediaItem = MediaItem.fromUri(url)
+            val lowerUrl = url.lowercase()
+            val mediaSource = if (lowerUrl.contains(".m3u8")) {
+                HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
+            } else {
+                ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
+            }
             
             exoPlayer = ExoPlayer.Builder(this).build().apply {
-                setMediaItem(MediaItem.fromUri(url))
+                setMediaSource(mediaSource)
                 prepare()
                 playWhenReady = true
                 addListener(object : Player.Listener {
@@ -256,6 +271,26 @@ class PlayerActivity : AppCompatActivity() {
             }
             playerView.player = exoPlayer
         }
+    }
+
+    private fun playbackHeaders(url: String, headers: Map<String, String>?): Map<String, String> {
+        val merged = linkedMapOf<String, String>()
+        merged["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        merged["Accept"] = "*/*"
+        merged["Accept-Language"] = "en-US,en;q=0.9"
+        merged["Origin"] = originFor(url)
+        merged["Referer"] = headers?.get("Referer") ?: headers?.get("referer") ?: originFor(url)
+        headers?.forEach { (key, value) ->
+            if (key.isNotBlank() && value.isNotBlank()) merged[key] = value
+        }
+        return merged
+    }
+
+    private fun originFor(url: String): String {
+        val parsed = android.net.Uri.parse(url)
+        val scheme = parsed.scheme ?: "https"
+        val host = parsed.host ?: return url
+        return "$scheme://$host/"
     }
 
     private fun showError(message: String) {

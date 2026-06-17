@@ -43,6 +43,7 @@ class StreamResponse(BaseModel):
     url: Optional[str] = None
     serverId: Optional[str] = None
     contentType: Optional[str] = None
+    isDirect: Optional[bool] = None
     headers: Optional[Dict[str, str]] = None
     error: Optional[str] = None
 
@@ -138,7 +139,12 @@ async def extract_stream(client: httpx.AsyncClient, server: Dict, tmdbId: int, t
         return {
             "url": embed_url,
             "serverId": server["id"],
-            "contentType": "text/html"
+            "contentType": "text/html",
+            "isDirect": False,
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Referer": embed_url
+            }
         }
     return None
 
@@ -157,11 +163,14 @@ async def get_stream(
     clean_result = await resolver.get_clean_stream(tmdbId, type, season or 1, episode or 1)
     if clean_result:
         logger.info(f"Clean stream detected via {clean_result['serverId']}")
+        is_direct = bool(clean_result.get("isDirect", False))
         return {
             "success": True,
             "url": clean_result["url"],
             "serverId": clean_result["serverId"],
-            "contentType": "text/html"
+            "contentType": "application/x-mpegURL" if is_direct and ".m3u8" in clean_result["url"] else ("video/mp4" if is_direct and ".mp4" in clean_result["url"] else "text/html"),
+            "isDirect": is_direct,
+            "headers": clean_result.get("headers")
         }
 
     # 2. Fallback to standard probing if advanced resolution fails
@@ -180,7 +189,9 @@ async def get_stream(
                     "success": True,
                     "url": result["url"],
                     "serverId": result["serverId"],
-                    "contentType": result["contentType"]
+                    "contentType": result["contentType"],
+                    "isDirect": result.get("isDirect", False),
+                    "headers": result.get("headers")
                 }
     
     return {"success": False, "error": "No working servers detected at this time."}

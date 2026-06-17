@@ -17,6 +17,16 @@ class AdvancedStreamResolver:
             "Accept-Language": "en-US,en;q=0.9",
         }
 
+
+    def playback_headers(self, referer: str) -> Dict[str, str]:
+        """Headers to pass with a resolved media URL, matching Kodi-style native playback handoff."""
+        return {
+            "User-Agent": self.headers["User-Agent"],
+            "Accept": "*/*",
+            "Accept-Language": self.headers.get("Accept-Language", "en-US,en;q=0.9"),
+            "Referer": referer,
+        }
+
     async def resolve_vidsrc_to(self, tmdb_id: str, content_type: str = "movie", season: int = 1, episode: int = 1) -> Optional[Dict]:
         """Resolve vidsrc.to direct stream."""
         # Vidsrc.to often has mirrors that provide direct links
@@ -41,7 +51,8 @@ class AdvancedStreamResolver:
                             return {
                                 "url": file_url,
                                 "serverId": "vidsrc_to_direct",
-                                "isDirect": True
+                                "isDirect": True,
+                                "headers": self.playback_headers(api_url)
                             }
             except Exception:
                 continue
@@ -50,7 +61,8 @@ class AdvancedStreamResolver:
         return {
             "url": f"https://vidsrc.to/embed/{content_type}/{tmdb_id}" + (f"/{season}/{episode}" if content_type == "tv" else ""),
             "serverId": "vidsrc_to_embed",
-            "isDirect": False
+            "isDirect": False,
+            "headers": self.playback_headers(f"https://vidsrc.to/")
         }
 
     async def resolve_vidlink(self, tmdb_id: str, content_type: str = "movie", season: int = 1, episode: int = 1) -> Optional[Dict]:
@@ -85,7 +97,8 @@ class AdvancedStreamResolver:
                             return {
                                 "url": stream_url,
                                 "serverId": "vidlink_direct",
-                                "isDirect": True
+                                "isDirect": True,
+                                "headers": self.playback_headers(api_url)
                             }
             except Exception:
                 continue
@@ -94,7 +107,8 @@ class AdvancedStreamResolver:
         return {
             "url": f"https://vidlink.pro/movie/{tmdb_id}" if content_type == "movie" else f"https://vidlink.pro/tv/{tmdb_id}/{season}/{episode}",
             "serverId": "vidlink_embed",
-            "isDirect": False
+            "isDirect": False,
+            "headers": self.playback_headers(f"https://vidlink.pro/")
         }
 
     async def resolve_vidsrc_embed_ru(self, tmdb_id: str, content_type: str = "movie", season: int = 1, episode: int = 1) -> Optional[Dict]:
@@ -107,7 +121,8 @@ class AdvancedStreamResolver:
             return {
                 "url": base_url,
                 "serverId": "vidsrc_embed_ru",
-                "isDirect": False
+                "isDirect": False,
+                "headers": self.playback_headers(base_url)
             }
         except Exception:
             pass
@@ -128,7 +143,8 @@ class AdvancedStreamResolver:
                         return {
                             "url": data["url"],
                             "serverId": "vidsrc_me_direct",
-                            "isDirect": True
+                            "isDirect": True,
+                            "headers": self.playback_headers(api_url)
                         }
         except Exception:
             pass
@@ -151,7 +167,8 @@ class AdvancedStreamResolver:
                         return {
                             "url": file_url,
                             "serverId": "autoembed_direct",
-                            "isDirect": True
+                            "isDirect": True,
+                            "headers": self.playback_headers(api_url)
                         }
         except Exception:
             pass
