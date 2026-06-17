@@ -85,7 +85,6 @@ class PlayerActivity : AppCompatActivity() {
         setupLayout()
 
         // Load servers from local asset and immediately show the manual picker.
-        // ServerManager.initialize() is a no-op if already called from MainActivity.
         ServerManager.initialize(this)
         ServerManager.resetHealth()
         showServerSelection()
@@ -176,10 +175,6 @@ class PlayerActivity : AppCompatActivity() {
 
         webView.visibility = View.VISIBLE
         webView.loadUrl(embedUrl)
-
-        // Hide the loading overlay once the page starts rendering.
-        // onPageFinished fires when the DOM is ready; the video player
-        // inside the embed page handles its own buffering from there.
         webView.webViewClient = buildWebViewClient(embedUrl)
     }
 
@@ -222,9 +217,12 @@ class PlayerActivity : AppCompatActivity() {
         web.settings.apply {
             javaScriptEnabled               = true
             domStorageEnabled               = true
+            databaseEnabled                 = true
             mediaPlaybackRequiresUserGesture = false
             setSupportMultipleWindows(false)
             javaScriptCanOpenWindowsAutomatically = false
+            // Set a common User Agent to avoid some basic bot detection
+            userAgentString = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
         }
     }
 
@@ -289,10 +287,10 @@ class PlayerActivity : AppCompatActivity() {
     private fun isAllowedDomain(host: String): Boolean {
         val allowed = listOf(
             "vidsrc.to", "vidsrc.me", "vidsrc.pro", "vidsrc.dev", "vidsrc.in",
-            "vidsrc.pm", "vidsrc.xyz", "vidsrc.cc", "vidsrc2.to",
-            "vidlink.pro", "videasy.net", "autoembed.cc", "autoembed.co",
+            "vidsrc.pm", "vidsrc.xyz", "vidsrc.cc", "vidsrc2.to", "vidsrcme.ru",
+            "vidlink.pro", "videasy.net", "videasy.to", "autoembed.cc", "autoembed.co",
             "superembed.stream", "embed.su", "2embed.cc", "2embed.skin",
-            "lookmovie2.to", "filmcave.ru",
+            "lookmovie2.to", "filmcave.ru", "filemoon.sx", "filemoon.to",
             "smashystream.com", "rivestream.live", "vidbinge.dev", "flixembed.net",
             "embedme.top", "multiembed.mov", "nontongo.win", "frembed.live",
             "warezcdn.net", "vidcloud.co", "streamwish.to", "filemoon.sx",
