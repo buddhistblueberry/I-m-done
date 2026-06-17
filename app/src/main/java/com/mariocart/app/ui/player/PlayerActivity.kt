@@ -402,6 +402,7 @@ class PlayerActivity : AppCompatActivity() {
                     }
                 }
             }
+            }
 
             return null
         }
