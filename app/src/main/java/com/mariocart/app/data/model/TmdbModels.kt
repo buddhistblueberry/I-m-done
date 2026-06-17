@@ -59,15 +59,18 @@ data class StreamingServer(
     val baseUrl: String
 ) {
     fun movieUrl(tmdbId: Int): String {
+        // Updated for 2026: Use consistent path structure verified in testing
         return when {
-            baseUrl.contains("vidlink.pro") -> "$baseUrl/$tmdbId"
+            baseUrl.contains("vidlink.pro") -> "$baseUrl/movie/$tmdbId"
+            baseUrl.contains("frembed") -> "$baseUrl$tmdbId"
             else -> "$baseUrl/movie/$tmdbId"
         }
     }
 
     fun tvUrl(tmdbId: Int, season: Int, episode: Int): String {
+        // Updated for 2026: Use consistent path structure verified in testing
         return when {
-            baseUrl.contains("vidlink.pro") -> "$baseUrl/$tmdbId/$season/$episode"
+            baseUrl.contains("vidlink.pro") -> "$baseUrl/tv/$tmdbId/$season/$episode"
             else -> "$baseUrl/tv/$tmdbId/$season/$episode"
         }
     }
