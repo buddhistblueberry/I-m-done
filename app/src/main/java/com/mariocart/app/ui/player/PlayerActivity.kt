@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -26,13 +27,15 @@ import androidx.media3.ui.PlayerView
 import com.mariocart.app.data.api.ApiClient
 import com.mariocart.app.data.model.StreamingServer
 import com.mariocart.app.data.server.ServerManager
+import com.mariocart.app.data.server.ServerTester
 import kotlinx.coroutines.launch
 
 /**
  * PlayerActivity — Hybrid player supporting native ExoPlayer and WebView fallback.
  * 
  * It first attempts to find a direct stream via the API for instant playback.
- * If no direct stream is found, it falls back to manual server selection in a WebView.
+ * If no direct stream is found, it falls back to auto-detecting and playing the best server.
+ * The server selection button is hidden until a video starts playing or discovery fails.
  */
 class PlayerActivity : AppCompatActivity() {
 
@@ -70,6 +73,7 @@ class PlayerActivity : AppCompatActivity() {
     private var exoPlayer:    ExoPlayer? = null
     private lateinit var loadingOverlay: FrameLayout
     private lateinit var loadingText:   TextView
+    private lateinit var serverButton:  TextView
     
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
@@ -144,20 +148,21 @@ class PlayerActivity : AppCompatActivity() {
             addView(loadingText)
         }
 
-        // Server selection button (always available)
-        val serverButton = TextView(this).apply {
-            text = "Servers"
+        // Server selection button (Hidden initially)
+        serverButton = TextView(this).apply {
+            text = "Switch Server"
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#80000000"))
-            setPadding(30, 15, 30, 15)
+            setBackgroundColor(Color.parseColor("#CC000000"))
+            setPadding(40, 20, 40, 20)
             textSize = 14f
+            visibility = View.GONE // Hidden during auto-play
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.END
-                topMargin = 50
-                rightMargin = 50
+                topMargin = 60
+                rightMargin = 60
             }
             setOnClickListener { showServerSelection() }
         }
@@ -217,10 +222,12 @@ class PlayerActivity : AppCompatActivity() {
                     tryNextServer()
                 } else if (!isVideoIntercepted && currentServerIndex >= servers.size - 1) {
                     loadingText.text = "All servers tried. Please select manually."
+                    serverButton.visibility = View.VISIBLE
                     showServerSelection()
                 }
             }
         } else {
+            serverButton.visibility = View.VISIBLE
             showServerSelection()
         }
     }
@@ -233,6 +240,7 @@ class PlayerActivity : AppCompatActivity() {
         
         loadingOverlay.visibility = View.GONE
         playerView.visibility = View.VISIBLE
+        serverButton.visibility = View.VISIBLE // Show server button once video starts
         
         exoPlayer = ExoPlayer.Builder(this).build().apply {
             setMediaItem(MediaItem.fromUri(url))
@@ -259,6 +267,7 @@ class PlayerActivity : AppCompatActivity() {
         loadingText.text = "Direct stream unavailable. Switching to manual selection…"
         
         ServerManager.initialize(this)
+        serverButton.visibility = View.VISIBLE
         showServerSelection()
     }
 
@@ -344,6 +353,11 @@ class PlayerActivity : AppCompatActivity() {
         playNative(url)
     }
 
+    private fun isAdOrTracker(url: String): Boolean {
+        val adDomains = listOf("google-analytics.com", "doubleclick.net", "adnxs.com", "popads.net", "propellerads.com")
+        return adDomains.any { url.contains(it) }
+    }
+
     private fun buildWebChromeClient() = object : WebChromeClient() {
         override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
             customView = view
@@ -384,7 +398,6 @@ class PlayerActivity : AppCompatActivity() {
     private fun injectCleanupScript(view: WebView?) {
         val script = """
             (function() {
-                // 1. Remove common ad overlays and popups
                 const selectors = [
                     '[class*="ad-"]', '[id*="ad-"]', '.ad-unit', '.overlay', 
                     '.pop-under', '.popup', '#popunder', '#pop-under'
@@ -393,7 +406,6 @@ class PlayerActivity : AppCompatActivity() {
                     document.querySelectorAll(s).forEach(el => el.remove());
                 });
 
-                // 2. Monitor for video elements
                 function checkVideos() {
                     const videos = document.getElementsByTagName('video');
                     for (let v of videos) {
@@ -408,50 +420,9 @@ class PlayerActivity : AppCompatActivity() {
                         }
                     }
                 }
-                
-                // 3. Auto-click play buttons to trigger video loading
-                function triggerPlay() {
-                    const playButtons = [
-                        '.play-button', '.vjs-big-play-button', '.jw-display-icon-container',
-                        '[aria-label="Play"]', '.play-icon'
-                    ];
-                    playButtons.forEach(s => {
-                        const btn = document.querySelector(s);
-                        if (btn) btn.click();
-                    });
-                }
-
-                setInterval(checkVideos, 1000);
-                setTimeout(triggerPlay, 2000);
-                
-                // 4. Block window.open to prevent popups
-                window.open = function() { return null; };
+                setInterval(checkVideos, 2000);
             })();
         """.trimIndent()
         view?.evaluateJavascript(script, null)
-    }
-
-    private fun isAdOrTracker(url: String): Boolean {
-        val adDomains = listOf(
-            "ads", "tracker", "analytics", "doubleclick", "popads", "popcash",
-            "propellerads", "adsterra", "exoclick", "juicyads", "onclickads",
-            "ad-delivery", "mads", "trafficjunky", "clksite", "clknr", "clkrev"
-        )
-        val lowerUrl = url.lowercase()
-        
-        // Don't block video streams themselves
-        if (lowerUrl.contains(".m3u8") || lowerUrl.contains(".mp4")) return false
-        
-        return adDomains.any { lowerUrl.contains(it) }
-    }
-
-    private fun showError(message: String) {
-        AlertDialog.Builder(this).setMessage(message).setPositiveButton("OK") { _, _ -> finish() }.show()
-    }
-
-    override fun onDestroy() {
-        exoPlayer?.release()
-        webView.destroy()
-        super.onDestroy()
     }
 }
