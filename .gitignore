@@ -30,3 +30,10 @@ Thumbs.db
 # --- Editors ---
 *.swp
 *.swo
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
