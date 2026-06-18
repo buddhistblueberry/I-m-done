@@ -41,9 +41,21 @@ from resolver import (  # noqa: E402
 )
 from servers_config import SERVERS, build_embed_url, get_server  # noqa: E402
 
-mongo_url = os.environ["MONGO_URL"]
-mongo_client = AsyncIOMotorClient(mongo_url)
-db = mongo_client[os.environ["DB_NAME"]]
+mongo_url = os.environ.get("MONGO_URL", "").strip()
+db_name = os.environ.get("DB_NAME", "imdone").strip()
+mongo_client: Optional[AsyncIOMotorClient] = None
+db = None
+if mongo_url:
+    try:
+        mongo_client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=3000)
+        db = mongo_client[db_name]
+        logging.info("Mongo configured: %s db=%s", mongo_url.split("@")[-1][:30], db_name)
+    except Exception as e:
+        logging.warning("Mongo init failed (%s) - continuing without persistence.", e)
+        mongo_client = None
+        db = None
+else:
+    logging.warning("MONGO_URL not set - /api/history will be empty. Streaming endpoints still work.")
 
 app = FastAPI(title="I'm Done - Streaming Backend", version="2.0.0")
 api = APIRouter(prefix="/api")
