@@ -125,7 +125,7 @@ class CaptchaActivity : AppCompatActivity() {
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
-                    progress.visibility = View.GONE
+                    this@CaptchaActivity.progress.visibility = View.GONE
                     url?.let { checkUrl(it) }
                 }
             }
