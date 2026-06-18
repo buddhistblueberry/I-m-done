@@ -9,9 +9,9 @@ object ApiClient {
 
     private const val TMDB_BASE = "https://api.themoviedb.org/3/"
 
-    // POINT THIS AT YOUR DEPLOYED BACKEND (Render / Railway / Fly / etc.).
-    // It MUST end with a trailing slash for Retrofit.
-    private const val STREAMING_BACKEND_BASE = "https://YOUR-BACKEND-HOST/"
+    // Points at the Emergent preview backend that's already running this code.
+    // After deploying to your own host (Render / Railway / Fly), change this.
+    private const val STREAMING_BACKEND_BASE = "https://backend-deploy-prep.preview.emergentagent.com/"
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
