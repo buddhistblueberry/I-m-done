@@ -19,7 +19,7 @@ class ContentRepository {
     val streamingServers: List<StreamingServer> = listOf(
 
         // Tier 1: Direct REST JSON API — fastest, zero ads, always works
-        StreamingServer("VidLink",          "https://vidlink.pro"),
+        StreamingServer("VidLink",          "https://vidlink.pro/movie/786892"),
         StreamingServer("Videasy",          "https://player.videasy.net"),
         StreamingServer("AutoEmbed",        "https://autoembed.cc/embed"),
         StreamingServer("AutoEmbed.co",     "https://autoembed.co/embed"),
