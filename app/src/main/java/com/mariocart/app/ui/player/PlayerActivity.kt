@@ -207,11 +207,15 @@ class PlayerActivity : AppCompatActivity() {
             
             AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Verification Required")
-                .setMessage("A security challenge (CAPTCHA) is required to continue. Please solve it to access the video.")
+                .setMessage("A security challenge (CAPTCHA) is required to continue. Please solve it to access the video. If you see ads or redirects, close the dialog and try another server.")
                 .setPositiveButton("Solve Now") { _, _ ->
                     startActivityForResult(VerificationActivity.newIntent(this, challengeUrl), 1001)
                 }
-                .setNegativeButton("Cancel") { _, _ -> finish() }
+                .setNegativeButton("Try Another Server") { _, _ -> 
+                    loadingOverlay.visibility = View.VISIBLE
+                    loadingText.text = "Trying next server..."
+                    tryNextServer()
+                }
                 .setCancelable(false)
                 .show()
         }

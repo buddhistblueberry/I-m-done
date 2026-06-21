@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -17,6 +19,7 @@ class VerificationActivity : AppCompatActivity() {
 
     companion object {
         private const val EXTRA_URL = "extra_url"
+        private const val VERIFICATION_TIMEOUT_MS = 60000L // 60 seconds
         
         fun newIntent(context: Context, url: String): Intent {
             return Intent(context, VerificationActivity::class.java).apply {
@@ -27,6 +30,9 @@ class VerificationActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
+    private var verificationStartTime = 0L
+    private var lastLoadedUrl = ""
+    private var timeoutHandler: Handler? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,14 +47,20 @@ class VerificationActivity : AppCompatActivity() {
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     progressBar.visibility = View.VISIBLE
+                    lastLoadedUrl = url ?: ""
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     progressBar.visibility = View.GONE
-                    // Check if the user has returned to a "normal" URL or if the challenge is gone
+                    lastLoadedUrl = url ?: ""
+                    
+                    // Check if the user has successfully completed verification
                     if (url != null && !isChallengeUrl(url)) {
-                        setResult(RESULT_OK)
-                        finish()
+                        // Additional check: verify it's not a clickbait/ad page
+                        if (!isClickbaitPage(url)) {
+                            setResult(RESULT_OK)
+                            finish()
+                        }
                     }
                 }
 
@@ -75,20 +87,60 @@ class VerificationActivity : AppCompatActivity() {
             finish()
             return
         }
+        
+        verificationStartTime = System.currentTimeMillis()
+        setupVerificationTimeout()
         webView.loadUrl(url)
+    }
+
+    private fun setupVerificationTimeout() {
+        timeoutHandler = Handler(Looper.getMainLooper())
+        timeoutHandler?.postDelayed({
+            if (!isFinishing) {
+                setResult(RESULT_CANCELED)
+                finish()
+            }
+        }, VERIFICATION_TIMEOUT_MS)
     }
 
     private fun isChallengeUrl(url: String): Boolean {
         val lower = url.lowercase()
-        return lower.contains("verify") || lower.contains("captcha") || 
-               lower.contains("checkpoint") || lower.contains("challenge")
+        // Check if it's a known challenge/verification URL
+        val isChallenge = lower.contains("verify") || lower.contains("captcha") || 
+                         lower.contains("checkpoint") || lower.contains("challenge")
+        
+        // Reject known clickbait/ad redirect patterns
+        val isClickbait = lower.contains("click") || lower.contains("ads") || 
+                         lower.contains("pop") || lower.contains("redirect") ||
+                         lower.contains("bet") || lower.contains("game") ||
+                         lower.contains("casino") || lower.contains("porn") ||
+                         lower.contains("dating") || lower.contains("survey")
+        
+        return isChallenge && !isClickbait
+    }
+
+    private fun isClickbaitPage(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains("click") || lower.contains("ads") || 
+               lower.contains("pop") || lower.contains("redirect") ||
+               lower.contains("bet") || lower.contains("game") ||
+               lower.contains("casino") || lower.contains("porn") ||
+               lower.contains("dating") || lower.contains("survey") ||
+               lower.contains("earn") || lower.contains("gift") ||
+               lower.contains("congratulations") || lower.contains("winner")
     }
 
     override fun onBackPressed() {
         if (webView.canGoBack()) {
             webView.goBack()
         } else {
+            setResult(RESULT_CANCELED)
             super.onBackPressed()
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        timeoutHandler?.removeCallbacksAndMessages(null)
     }
 }

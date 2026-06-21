@@ -195,7 +195,12 @@ object StreamExtractor {
         
         // Exclude common clickbait/ad patterns that aren't real challenges
         val isClickbait = lowerUrl.contains("click") || lowerUrl.contains("ads") || 
-                          lowerUrl.contains("pop") || lowerUrl.contains("redirect")
+                          lowerUrl.contains("pop") || lowerUrl.contains("redirect") ||
+                          lowerUrl.contains("bet") || lowerUrl.contains("game") ||
+                          lowerUrl.contains("casino") || lowerUrl.contains("porn") ||
+                          lowerUrl.contains("dating") || lowerUrl.contains("survey") ||
+                          lowerContent.contains("click here") || lowerContent.contains("earn money") ||
+                          lowerContent.contains("free gift") || lowerContent.contains("congratulations")
         
         if (isClickbait) return false
 

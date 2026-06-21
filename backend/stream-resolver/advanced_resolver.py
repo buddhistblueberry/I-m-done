@@ -171,7 +171,8 @@ class AdvancedStreamResolver:
                 content = resp.text.lower()
                 
                 # Refined: Ignore common ad/clickbait domains
-                is_clickbait = any(x in url_str for x in ["click", "ads", "pop", "redirect", "bet", "game"])
+                is_clickbait = any(x in url_str for x in ["click", "ads", "pop", "redirect", "bet", "game", "casino", "porn", "dating", "survey"]) or \
+                               any(x in content for x in ["click here", "earn money", "free gift", "congratulations"])
                 
                 if not is_clickbait and (
                    any(x in url_str for x in ["verify", "captcha", "checkpoint", "challenge"]) or \
