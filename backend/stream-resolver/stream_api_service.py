@@ -43,7 +43,9 @@ class StreamResponse(BaseModel):
     url: Optional[str] = None
     serverId: Optional[str] = None
     contentType: Optional[str] = None
+    isDirect: Optional[bool] = False
     headers: Optional[Dict[str, str]] = None
+    challengeUrl: Optional[str] = None
     error: Optional[str] = None
 
 class HealthResponse(BaseModel):
@@ -161,7 +163,9 @@ async def get_stream(
             "success": True,
             "url": clean_result["url"],
             "serverId": clean_result["serverId"],
-            "contentType": "text/html"
+            "contentType": "video/mp4" if clean_result.get("isDirect") else "text/html",
+            "isDirect": clean_result.get("isDirect", False),
+            "challengeUrl": clean_result.get("challengeUrl")
         }
 
     # 2. Fallback to standard probing if advanced resolution fails
@@ -180,7 +184,9 @@ async def get_stream(
                     "success": True,
                     "url": result["url"],
                     "serverId": result["serverId"],
-                    "contentType": result["contentType"]
+                    "contentType": result["contentType"],
+                    "isDirect": result.get("isDirect", False),
+                    "challengeUrl": result.get("challengeUrl")
                 }
     
     return {"success": False, "error": "No working servers detected at this time."}

@@ -161,6 +161,22 @@ class AdvancedStreamResolver:
         """Try all resolvers and return the cleanest working one, prioritizing direct links."""
         tmdb_str = str(tmdb_id)
         
+        # Check for global challenges first (example: Vidsrc.to often triggers a challenge)
+        try:
+            async with httpx.AsyncClient(headers=self.headers, follow_redirects=True, timeout=5.0) as client:
+                # Probe a common endpoint to see if we're being challenged
+                probe_url = f"https://vidsrc.to/embed/movie/{tmdb_id}"
+                resp = await client.get(probe_url)
+                if "verify" in resp.url.path or "captcha" in resp.url.path or resp.status_code == 403:
+                    return {
+                        "url": str(resp.url),
+                        "serverId": "vidsrc_to_challenge",
+                        "isDirect": False,
+                        "challengeUrl": str(resp.url)
+                    }
+        except Exception:
+            pass
+
         resolvers = [
             self.resolve_vidlink,
             self.resolve_autoembed,
@@ -173,6 +189,10 @@ class AdvancedStreamResolver:
         for resolver in resolvers:
             result = await resolver(tmdb_str, content_type, season, episode)
             if result:
+                # Check if this specific result is a challenge
+                if result.get("challengeUrl"):
+                    return result
+                
                 if result.get("isDirect", False):
                     return result
                 results.append(result)

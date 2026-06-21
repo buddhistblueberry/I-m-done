@@ -164,18 +164,27 @@ class PlayerActivity : AppCompatActivity() {
                 loadingText.text = "Resolving direct stream for $videoTitle..."
                 val response = ApiClient.streamingBackendApi.getStream(tmdbId, contentType, season, episode)
                 
-                if (response.success && response.url != null) {
-                    if (response.isDirect == true || response.url.contains(".m3u8") || response.url.contains(".mp4")) {
-                        playNative(response.url)
-                    } else {
-                        // If backend gave an embed, try to extract it natively
-                        loadingText.text = "Extracting video from ${response.serverId}..."
-                        val directUrl = StreamExtractor.extract(response.url, tmdbId, contentType, season, episode)
-                        if (directUrl != null) {
-                            playNative(directUrl)
+                if (response.success) {
+                    if (response.challengeUrl != null) {
+                        showChallengeDialog(response.challengeUrl)
+                        return@launch
+                    }
+
+                    if (response.url != null) {
+                        if (response.isDirect == true || response.url.contains(".m3u8") || response.url.contains(".mp4")) {
+                            playNative(response.url)
                         } else {
-                            tryNextServer()
+                            // If backend gave an embed, try to extract it natively
+                            loadingText.text = "Extracting video from ${response.serverId}..."
+                            val directUrl = StreamExtractor.extract(response.url, tmdbId, contentType, season, episode)
+                            if (directUrl != null) {
+                                playNative(directUrl)
+                            } else {
+                                tryNextServer()
+                            }
                         }
+                    } else {
+                        tryNextServer()
                     }
                 } else {
                     tryNextServer()
@@ -184,6 +193,25 @@ class PlayerActivity : AppCompatActivity() {
                 Log.e("PlayerActivity", "Discovery Error: ${e.message}")
                 tryNextServer()
             }
+        }
+    }
+
+    private fun showChallengeDialog(challengeUrl: String) {
+        runOnUiThread {
+            loadingOverlay.visibility = View.VISIBLE
+            loadingText.text = "Challenge required to access stream."
+            
+            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Verification Required")
+                .setMessage("A security challenge (CAPTCHA) is required to continue. Please solve it in your browser and try again.")
+                .setPositiveButton("Open Browser") { _, _ ->
+                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(challengeUrl))
+                    startActivity(intent)
+                    finish() // Close player so they can restart after solving
+                }
+                .setNegativeButton("Cancel") { _, _ -> finish() }
+                .setCancelable(false)
+                .show()
         }
     }
 
