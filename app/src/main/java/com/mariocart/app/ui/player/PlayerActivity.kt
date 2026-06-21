@@ -177,8 +177,12 @@ class PlayerActivity : AppCompatActivity() {
                             // If backend gave an embed, try to extract it natively
                             loadingText.text = "Extracting video from ${response.serverId}..."
                             val directUrl = StreamExtractor.extract(response.url, tmdbId, contentType, season, episode)
+                            val localChallenge = StreamExtractor.getLastChallengeUrl()
+                            
                             if (directUrl != null) {
                                 playNative(directUrl)
+                            } else if (localChallenge != null) {
+                                showChallengeDialog(localChallenge)
                             } else {
                                 tryNextServer()
                             }
@@ -237,11 +241,14 @@ class PlayerActivity : AppCompatActivity() {
                               else server.tvUrl(tmdbId, season, episode)
                 
                 val directUrl = StreamExtractor.extract(embedUrl, tmdbId, contentType, season, episode)
+                val localChallenge = StreamExtractor.getLastChallengeUrl()
                 
                 if (directUrl != null) {
                     currentServerName = server.name
                     ServerManager.markServerSuccess(server.name)
                     playNative(directUrl)
+                } else if (localChallenge != null) {
+                    showChallengeDialog(localChallenge)
                 } else {
                     ServerManager.markServerDead(server.name)
                     if (autoTryServers) {
@@ -307,8 +314,12 @@ class PlayerActivity : AppCompatActivity() {
                     val embedUrl = if (contentType == "movie") server.movieUrl(tmdbId) 
                                   else server.tvUrl(tmdbId, season, episode)
                     val directUrl = StreamExtractor.extract(embedUrl, tmdbId, contentType, season, episode)
+                    val localChallenge = StreamExtractor.getLastChallengeUrl()
+                    
                     if (directUrl != null) {
                         playNative(directUrl)
+                    } else if (localChallenge != null) {
+                        showChallengeDialog(localChallenge)
                     } else {
                         showError("Failed to extract from ${server.name}")
                     }

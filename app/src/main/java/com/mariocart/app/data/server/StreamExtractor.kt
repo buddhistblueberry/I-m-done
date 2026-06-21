@@ -46,12 +46,17 @@ object StreamExtractor {
         Regex("""(https?://[^\s"'<>()\]]+/proxy/[^\s"'<>()\]]*playlist\.m3u8[^\s"'<>()\]]*)""", RegexOption.IGNORE_CASE),
     )
 
+    private var lastChallengeUrl: String? = null
+
+    fun getLastChallengeUrl(): String? = lastChallengeUrl
+
     suspend fun extractDirect(
         tmdbId: Int,
         contentType: String,
         season: Int = 1,
         episode: Int = 1
     ): String? = withContext(Dispatchers.IO) {
+        lastChallengeUrl = null
         val isMovie = contentType == "movie"
         Log.d(TAG, "extractDirect id=$tmdbId type=$contentType s=$season e=$episode")
 
@@ -148,6 +153,15 @@ object StreamExtractor {
             .header("Referer", referer ?: url)
             .build()
         val resp = client.newCall(req).execute()
+        
+        val finalUrl = resp.request.url.toString().lowercase()
+        val content = resp.peekBody(1024 * 10).string().lowercase()
+        
+        if (anyChallenge(finalUrl, content, resp.code)) {
+            lastChallengeUrl = resp.request.url.toString()
+            Log.d(TAG, "Challenge detected in fetch: $lastChallengeUrl")
+        }
+
         val body = if (resp.isSuccessful) resp.body?.string() else null
         resp.close()
         body
@@ -161,10 +175,27 @@ object StreamExtractor {
             .header("Accept", "application/json")
             .build()
         val resp = client.newCall(req).execute()
+        
+        val finalUrl = resp.request.url.toString().lowercase()
+        val content = resp.peekBody(1024 * 10).string().lowercase()
+        
+        if (anyChallenge(finalUrl, content, resp.code)) {
+            lastChallengeUrl = resp.request.url.toString()
+            Log.d(TAG, "Challenge detected in fetchJson: $lastChallengeUrl")
+        }
+
         val body = if (resp.isSuccessful) resp.body?.string() else null
         resp.close()
         body
     } catch (_: Exception) { null }
+
+    private fun anyChallenge(url: String, content: String, code: Int): Boolean {
+        return url.contains("verify") || url.contains("captcha") || 
+               url.contains("checkpoint") || url.contains("challenge") ||
+               content.contains("captcha") || content.contains("robot") || 
+               content.contains("verify you are human") || content.contains("cf-challenge") ||
+               code == 403
+    }
 
     private fun isValidVideo(url: String): Boolean {
         if (url.isBlank() || url.length < 20) return false

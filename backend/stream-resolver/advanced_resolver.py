@@ -167,7 +167,11 @@ class AdvancedStreamResolver:
                 # Probe a common endpoint to see if we're being challenged
                 probe_url = f"https://vidsrc.to/embed/movie/{tmdb_id}"
                 resp = await client.get(probe_url)
-                if "verify" in resp.url.path or "captcha" in resp.url.path or resp.status_code == 403:
+                url_str = str(resp.url).lower()
+                content = resp.text.lower()
+                if any(x in url_str for x in ["verify", "captcha", "checkpoint", "challenge"]) or \
+                   any(x in content for x in ["captcha", "robot", "verify you are human", "cf-challenge"]) or \
+                   resp.status_code == 403:
                     return {
                         "url": str(resp.url),
                         "serverId": "vidsrc_to_challenge",
