@@ -204,8 +204,10 @@ object StreamExtractor {
         
         if (isClickbait) return false
 
+        // Detect real challenges or redirects to original sites for verification
         return lowerUrl.contains("verify") || lowerUrl.contains("captcha") || 
                lowerUrl.contains("checkpoint") || lowerUrl.contains("challenge") ||
+               lowerUrl.contains("vidsrc.to") || lowerUrl.contains("vidsrc.me") || 
                lowerContent.contains("captcha") || lowerContent.contains("robot") || 
                lowerContent.contains("verify you are human") || lowerContent.contains("cf-challenge") ||
                code == 403
