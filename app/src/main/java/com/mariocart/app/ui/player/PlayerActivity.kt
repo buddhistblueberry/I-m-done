@@ -1,3 +1,4 @@
+// app/src/main/java/com/mariocart/app/ui/player/PlayerActivity.kt
 package com.mariocart.app.ui.player
 
 import android.content.Context
@@ -20,6 +21,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.mariocart.app.data.server.StreamExtractor
 import com.mariocart.app.ui.theme.MarioCartTheme
+import kotlinx.coroutines.delay
 
 @UnstableApi
 class PlayerActivity : ComponentActivity() {
@@ -34,14 +36,12 @@ class PlayerActivity : ComponentActivity() {
             season: Int = 1,
             episode: Int = 1,
             title: String = "Now Playing"
-        ): Intent {
-            return Intent(context, PlayerActivity::class.java).apply {
-                putExtra("TMDB_ID", tmdbId)
-                putExtra("CONTENT_TYPE", contentType)
-                putExtra("SEASON", season)
-                putExtra("EPISODE", episode)
-                putExtra("TITLE", title)
-            }
+        ): Intent = Intent(context, PlayerActivity::class.java).apply {
+            putExtra("TMDB_ID", tmdbId)
+            putExtra("CONTENT_TYPE", contentType)
+            putExtra("SEASON", season)
+            putExtra("EPISODE", episode)
+            putExtra("TITLE", title)
         }
     }
 
@@ -53,8 +53,6 @@ class PlayerActivity : ComponentActivity() {
         val season = intent.getIntExtra("SEASON", 1)
         val episode = intent.getIntExtra("EPISODE", 1)
         val title = intent.getStringExtra("TITLE") ?: "Playing"
-
-        Log.d(TAG, "Starting player for TMDB $tmdbId ($contentType)")
 
         if (tmdbId == -1) {
             finish()
@@ -82,21 +80,32 @@ fun PlayerScreen(
     var streamUrl by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    var exoPlayer by remember { mutableStateOf<ExoPlayer?>(null) }
+    var retryCount by remember { mutableStateOf(0) }
+    val maxRetries = 2
 
-    LaunchedEffect(tmdbId, contentType, season, episode) {
+    // Improved extraction with retry
+    LaunchedEffect(tmdbId, contentType, season, episode, retryCount) {
+        isLoading = true
+        error = null
+
         try {
-            Log.d("StreamExtractor", "Extracting stream for $tmdbId...")
+            Log.d("Player", "Extracting stream for $tmdbId ($contentType)")
             val url = StreamExtractor.extract(tmdbId, contentType, season, episode)
+
             if (!url.isNullOrBlank()) {
                 streamUrl = url
-                Log.i("StreamExtractor", "✅ Got stream: $url")
+                Log.i("Player", "✅ Stream ready: $url")
             } else {
-                error = "No stream URL found"
+                throw Exception("No stream URL returned")
             }
         } catch (e: Exception) {
-            Log.e("StreamExtractor", "Extraction failed", e)
-            error = "Stream error: ${e.message}"
+            Log.e("Player", "Extraction failed (attempt ${retryCount + 1})", e)
+            if (retryCount < maxRetries) {
+                retryCount++
+                delay(1500) // brief backoff
+            } else {
+                error = "Failed to load stream. Try another title or check connection."
+            }
         } finally {
             isLoading = false
         }
@@ -105,20 +114,26 @@ fun PlayerScreen(
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         when {
             isLoading -> {
-                CircularProgressIndicator()
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Loading stream...", color = MaterialTheme.colorScheme.onBackground)
+                }
             }
+
             error != null -> {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(24.dp)
                 ) {
-                    Text(error!!, color = MaterialTheme.colorScheme.error)
+                    Text("⚠️ $error", color = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = { (context as? ComponentActivity)?.finish() }) {
-                        Text("Back")
+                        Text("Back to Browse")
                     }
                 }
             }
+
             streamUrl != null -> {
                 AndroidView(
                     factory = { ctx ->
@@ -127,22 +142,18 @@ fun PlayerScreen(
                             prepare()
                             playWhenReady = true
                         }
-                        exoPlayer = player
 
                         PlayerView(ctx).apply {
                             this.player = player
                             useController = true
+                            controllerAutoShow = true
                         }
                     },
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    // Key prevents recreating player unnecessarily on recomposition
+                    key = streamUrl
                 )
             }
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            exoPlayer?.release()
         }
     }
 }
