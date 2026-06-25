@@ -3,6 +3,7 @@ package com.mariocart.app.ui
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -51,15 +52,12 @@ class MainActivity : ComponentActivity() {
             MarioCartTheme {
                 MainApp(
                     onPlayContent = { item ->
-    startActivity(
-        PlayerActivity.newIntent(
-            context = this@MainActivity,
-            tmdbId = item.id,
-            contentType = item.contentType,
-            title = item.displayTitle
-                                     )
-                                  )
-                               }
+                        startActivity(
+                            PlayerActivity.newIntent(
+                                context = this@MainActivity,
+                                tmdbId = item.id,
+                                contentType = item.contentType,
+                                title = item.displayTitle
                             )
                         )
                     }
@@ -72,7 +70,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    var showSearch by remember { mutableStateOf(false) }
+    var showSearch by rememberSaveable { mutableStateOf(false) }
 
     val tabs = listOf("Home", "Movies", "TV Shows", "Browse")
 
@@ -95,7 +93,11 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
                 )
             }
         ) { padding ->
-            Box(modifier = Modifier.padding(padding)) {
+            Box(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+            ) {
                 when (selectedTab) {
                     0 -> HomeScreen(onItemClick = onPlayContent)
                     1 -> MoviesScreen(onItemClick = onPlayContent)
@@ -105,11 +107,16 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
             }
         }
 
+        // Search Screen Overlay
         AnimatedVisibility(
             visible = showSearch,
             enter = fadeIn(),
             exit = fadeOut()
         ) {
+            BackHandler(enabled = showSearch) {
+                showSearch = false
+            }
+
             SearchScreen(
                 onItemClick = onPlayContent,
                 onClose = { showSearch = false }
@@ -130,38 +137,45 @@ fun TopNavBar(
             .fillMaxWidth()
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(Color.Black.copy(alpha = 0.98f), Color.Black.copy(alpha = 0.85f))
+                    listOf(
+                        Color.Black.copy(alpha = 0.98f),
+                        Color.Black.copy(alpha = 0.92f)
+                    )
                 )
             )
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "\uD83C\uDF44",
-            fontSize = 18.sp,
-            modifier = Modifier.padding(end = 4.dp)
+            text = "🍄",
+            fontSize = 22.sp,
+            modifier = Modifier.padding(end = 8.dp)
         )
-        Spacer(modifier = Modifier.width(4.dp))
 
         tabs.forEachIndexed { index, label ->
             val isSelected = selectedTab == index
             Text(
                 text = label,
                 color = if (isSelected) Color.White else TextMuted,
-                fontSize = 13.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                fontSize = 13.5.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .background(if (isSelected) Red.copy(alpha = 0.25f) else Color.Transparent)
                     .clickable { onTabSelected(index) }
-                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
             )
-            Spacer(modifier = Modifier.width(4.dp))
+            Spacer(modifier = Modifier.width(6.dp))
         }
 
         Spacer(modifier = Modifier.weight(1f))
+
         IconButton(onClick = onSearchClick) {
-            Icon(Icons.Default.Search, contentDescription = "Search", tint = TextPrimary)
+            Icon(
+                imageVector = Icons.Default.Search,
+                contentDescription = "Search",
+                tint = TextPrimary
+            )
         }
     }
 }
@@ -181,7 +195,7 @@ fun BottomNav(
             NavigationBarItem(
                 selected = selectedTab == index,
                 onClick = { onTabSelected(index) },
-                icon = {},
+                icon = { /* No icon - text only */ },
                 label = {
                     Text(
                         text = label,
@@ -192,7 +206,7 @@ fun BottomNav(
                 colors = NavigationBarItemDefaults.colors(
                     selectedTextColor = Color.White,
                     unselectedTextColor = TextMuted,
-                    indicatorColor = Red.copy(alpha = 0.2f)
+                    indicatorColor = Red.copy(alpha = 0.22f)
                 )
             )
         }
