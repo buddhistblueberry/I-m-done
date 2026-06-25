@@ -25,7 +25,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.mariocart.app.data.server.StreamExtractor
 import com.mariocart.app.ui.theme.MarioCartTheme
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -33,9 +32,10 @@ import kotlinx.coroutines.launch
 class PlayerActivity : ComponentActivity() {
 
     private var exoPlayer: ExoPlayer? = null
-    private val scope = CoroutineScope(Dispatchers.Main)
 
     companion object {
+        private const val TAG = "PlayerActivity"
+
         const val EXTRA_TMDB_ID = "tmdb_id"
         const val EXTRA_CONTENT_TYPE = "content_type"
         const val EXTRA_SEASON = "season"
@@ -69,8 +69,10 @@ class PlayerActivity : ComponentActivity() {
         val episode = intent.getIntExtra(EXTRA_EPISODE, 1)
         val title = intent.getStringExtra(EXTRA_TITLE) ?: "Playing"
 
+        Log.d(TAG, "Launching player - TMDB: $tmdbId, Type: $contentType, S$season E$episode")
+
         if (tmdbId == -1) {
-            Toast.makeText(this, "Invalid content", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Invalid content ID", Toast.LENGTH_SHORT).show()
             finish()
             return
         }
@@ -98,49 +100,46 @@ class PlayerActivity : ComponentActivity() {
     ) {
         var isLoading by remember { mutableStateOf(true) }
         var errorMessage by remember { mutableStateOf<String?>(null) }
+        var streamUrl by remember { mutableStateOf<String?>(null) }
         val context = LocalContext.current
 
         var player by remember { mutableStateOf<ExoPlayer?>(null) }
 
-        DisposableEffect(Unit) {
-            onDispose {
-                player?.release()
-            }
-        }
-
-        LaunchedEffect(tmdbId) {
+        // Stream extraction
+        LaunchedEffect(tmdbId, contentType, season, episode) {
             try {
                 isLoading = true
                 errorMessage = null
 
-                val streamUrl = StreamExtractor.extract(
+                Log.d("StreamExtractor", "Starting extraction for TMDB $tmdbId")
+
+                val url = StreamExtractor.extract(
                     tmdbId = tmdbId,
                     contentType = contentType,
                     season = season,
                     episode = episode
                 )
 
-                if (streamUrl.isNullOrEmpty()) {
-                    errorMessage = "Failed to extract stream URL"
-                    isLoading = false
-                    return@LaunchedEffect
+                streamUrl = url
+
+                if (url.isNullOrBlank()) {
+                    errorMessage = "No stream URL found. Check logs."
+                    Log.e("StreamExtractor", "Failed to get stream URL")
+                } else {
+                    Log.i("StreamExtractor", "✅ Got stream: $url")
+                    initializePlayer(url, context)
                 }
-
-                Log.i("PlayerActivity", "✅ Playing: $streamUrl")
-
-                val exo = ExoPlayer.Builder(context).build().apply {
-                    val mediaItem = MediaItem.Builder().setUri(streamUrl).build()
-                    setMediaItem(mediaItem)
-                    prepare()
-                    playWhenReady = true
-                }
-
-                player = exo
-                isLoading = false
             } catch (e: Exception) {
-                Log.e("PlayerActivity", "Error", e)
-                errorMessage = e.message ?: "Playback error"
+                Log.e("StreamExtractor", "Crash during extraction", e)
+                errorMessage = "Extraction error: ${e.message}"
+            } finally {
                 isLoading = false
+            }
+        }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                player?.release()
             }
         }
 
@@ -162,17 +161,12 @@ class PlayerActivity : ComponentActivity() {
                 )
             }
 
-            // Loading
             if (isLoading) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                 }
             }
 
-            // Error
             if (errorMessage != null) {
                 Column(
                     modifier = Modifier
@@ -183,7 +177,7 @@ class PlayerActivity : ComponentActivity() {
                 ) {
                     Text("Playback Error", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.error)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(errorMessage ?: "", color = MaterialTheme.colorScheme.onBackground)
+                    Text(errorMessage ?: "", color = MaterialTheme.colorScheme.onSurface)
                     Spacer(modifier = Modifier.height(24.dp))
                     Button(onClick = { finish() }) {
                         Text("Back")
@@ -210,6 +204,19 @@ class PlayerActivity : ComponentActivity() {
                     maxLines = 1
                 )
             }
+        }
+    }
+
+    private fun initializePlayer(url: String, context: Context) {
+        try {
+            exoPlayer = ExoPlayer.Builder(context).build().apply {
+                val mediaItem = MediaItem.Builder().setUri(url).build()
+                setMediaItem(mediaItem)
+                prepare()
+                playWhenReady = true
+            }
+        } catch (e: Exception) {
+            Log.e("PlayerActivity", "Failed to initialize ExoPlayer", e)
         }
     }
 
