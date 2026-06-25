@@ -3,10 +3,6 @@ package com.mariocart.app.ui
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.lifecycle.lifecycleScope
-import com.mariocart.app.data.server.ServerManager
-import kotlinx.coroutines.launch
-
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -26,8 +22,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-
+import androidx.lifecycle.lifecycleScope
 import com.mariocart.app.data.model.TmdbItem
+import com.mariocart.app.data.server.ServerManager
 import com.mariocart.app.ui.browse.BrowseScreen
 import com.mariocart.app.ui.home.HomeScreen
 import com.mariocart.app.ui.movies.MoviesScreen
@@ -39,6 +36,7 @@ import com.mariocart.app.ui.theme.Red
 import com.mariocart.app.ui.theme.TextMuted
 import com.mariocart.app.ui.theme.TextPrimary
 import com.mariocart.app.ui.tv.TvScreen
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -140,6 +138,7 @@ fun TopNavBar(
             modifier = Modifier.padding(end = 4.dp)
         )
         Spacer(modifier = Modifier.width(4.dp))
+
         tabs.forEachIndexed { index, label ->
             val isSelected = selectedTab == index
             Text(
@@ -155,6 +154,7 @@ fun TopNavBar(
             )
             Spacer(modifier = Modifier.width(4.dp))
         }
+
         Spacer(modifier = Modifier.weight(1f))
         IconButton(onClick = onSearchClick) {
             Icon(Icons.Default.Search, contentDescription = "Search", tint = TextPrimary)
