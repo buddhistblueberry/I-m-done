@@ -24,10 +24,11 @@ object StreamExtractor {
         "Referer" to "https://www.lookmovie2.to/"
     )
 
-    // Flexible extract to match PlayerActivity calls
+    // Main entry point - flexible to match PlayerActivity calls
     suspend fun extract(tmdbId: Any, contentType: Any = "movie", season: Any = 1, episode: Any = 1): String? {
         val id = tmdbId.toString().toIntOrNull() ?: return null
-        val isMovie = contentType.toString().lowercase().contains("movie") || contentType.toString() == "true"
+        val isMovie = contentType.toString().lowercase().contains("movie") || 
+                     contentType.toString() == "true"
         val s = season.toString().toIntOrNull() ?: 1
         val e = episode.toString().toIntOrNull() ?: 1
         return extractLookMovie(id, isMovie, s, e)
@@ -50,13 +51,16 @@ object StreamExtractor {
             val html = response.body?.string() ?: return@withContext null
             val finalUrl = response.request.url.toString()
 
+            // Handle verification pages
             if (html.contains("Thread Defence", ignoreCase = true) || 
                 html.contains("recaptcha", ignoreCase = true) || 
-                html.contains("challenge", ignoreCase = true)) {
+                html.contains("challenge", ignoreCase = true) ||
+                html.contains("verify you are human", ignoreCase = true)) {
                 Log.d(TAG, "Verification needed: $finalUrl")
                 return@withContext finalUrl
             }
 
+            // Extract storage data
             val storageRegex = if (isMovie) {
                 Pattern.compile("""movie_storage"\]\s*=\s*(\{.*?\});""", Pattern.DOTALL)
             } else {
@@ -88,16 +92,18 @@ object StreamExtractor {
                 val streams = json.optJSONObject("streams") ?: json.optJSONObject("data")?.optJSONObject("streams")
                 if (streams != null && streams.length() > 0) {
                     val directUrl = streams.getString(streams.keys().next())
-                    Log.d(TAG, "✅ Direct LookMovie: $directUrl")
+                    Log.d(TAG, "✅ Direct LookMovie stream found: $directUrl")
                     return@withContext directUrl
                 }
             }
-            return@withContext finalUrl
+
+            return@withContext finalUrl // fallback to embed
         } catch (e: Exception) {
-            Log.e(TAG, "LookMovie error", e)
+            Log.e(TAG, "LookMovie extraction failed", e)
             return@withContext null
         }
     }
 
+    // Legacy compatibility
     fun getLastChallengeUrl(): String? = null
 }
