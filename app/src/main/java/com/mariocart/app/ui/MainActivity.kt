@@ -57,15 +57,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         lifecycleScope.launch { ServerManager.initialize(this@MainActivity) }
         lifecycleScope.launch { AutoUpdater.checkAndPrompt(this@MainActivity) }
+
         setContent {
             MarioCartTheme {
                 MainApp(
                     onPlayContent = { item ->
                         startActivity(
                             PlayerActivity.newIntent(
-                                context = this,
+                                context = this@MainActivity,
                                 tmdbId = item.id,
-                                type = item.contentType,
+                                contentType = item.contentType,   // ← Fixed: was "type"
                                 title = item.displayTitle
                             )
                         )
@@ -124,8 +125,7 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
                 onClose = {
                     showSearch = false
                     searchInitialGenre = null
-                },
-        
+                }
             )
         }
     }
