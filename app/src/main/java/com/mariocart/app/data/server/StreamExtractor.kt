@@ -21,31 +21,20 @@ object StreamExtractor {
 
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer" to "https://www.lookmovie2.to/",
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        "Referer" to "https://www.lookmovie2.to/"
     )
 
-    // Overloads to handle different call signatures from PlayerActivity
-    suspend fun extract(tmdbId: Any, contentType: Any = "movie", season: Any = 1, episode: Any = 1): String? {
-        return extractWithExtras(tmdbId, contentType, season, episode)
-    }
+    // Main flexible entry point - accepts any number of arguments
+    suspend fun extract(vararg args: Any): String? {
+        val tmdbId = args.getOrNull(0)?.toString()?.toIntOrNull() ?: return null
+        val contentType = args.getOrNull(1) ?: "movie"
+        val season = args.getOrNull(2)?.toString()?.toIntOrNull() ?: 1
+        val episode = args.getOrNull(3)?.toString()?.toIntOrNull() ?: 1
 
-    suspend fun extract(tmdbId: Any, contentType: Any, season: Any, episode: Any, extra1: Any?, extra2: Any?): String? {
-        return extractWithExtras(tmdbId, contentType, season, episode)
-    }
-
-    private suspend fun extractWithExtras(
-        tmdbId: Any,
-        contentType: Any = "movie",
-        season: Any = 1,
-        episode: Any = 1
-    ): String? {
-        val id = tmdbId.toString().toIntOrNull() ?: return null
         val isMovie = contentType.toString().lowercase().contains("movie") || 
                      contentType.toString().equals("true", ignoreCase = true)
-        val s = season.toString().toIntOrNull() ?: 1
-        val e = episode.toString().toIntOrNull() ?: 1
-        return extractLookMovie(id, isMovie, s, e)
+
+        return extractLookMovie(tmdbId, isMovie, season, episode)
     }
 
     suspend fun extractLookMovie(tmdbId: Int, isMovie: Boolean, season: Int = 1, episode: Int = 1): String? = withContext(Dispatchers.IO) {
@@ -66,7 +55,7 @@ object StreamExtractor {
             val finalUrl = response.request.url.toString()
 
             if (isVerificationPage(html)) {
-                Log.w(TAG, "Verification needed: $finalUrl")
+                Log.w(TAG, "Verification needed → $finalUrl")
                 return@withContext finalUrl
             }
 
@@ -101,22 +90,23 @@ object StreamExtractor {
                 val streams = json.optJSONObject("streams") ?: json.optJSONObject("data")?.optJSONObject("streams")
                 if (streams != null && streams.length() > 0) {
                     val directUrl = streams.getString(streams.keys().next())
-                    Log.i(TAG, "✅ Direct stream: $directUrl")
+                    Log.i(TAG, "✅ Direct stream found: $directUrl")
                     return@withContext directUrl
                 }
             }
             return@withContext finalUrl
         } catch (e: Exception) {
-            Log.e(TAG, "Error extracting stream", e)
+            Log.e(TAG, "Extraction failed for tmdbId=$tmdbId", e)
             return@withContext null
         }
     }
 
     private fun isVerificationPage(html: String): Boolean {
-        return html.contains("Thread Defence", ignoreCase = true) ||
-               html.contains("recaptcha", ignoreCase = true) ||
-               html.contains("challenge", ignoreCase = true) ||
-               html.contains("verify you are human", ignoreCase = true)
+        val lower = html.lowercase()
+        return lower.contains("thread defence") || 
+               lower.contains("recaptcha") || 
+               lower.contains("challenge") || 
+               lower.contains("verify you are human")
     }
 
     fun getLastChallengeUrl(): String? = null
