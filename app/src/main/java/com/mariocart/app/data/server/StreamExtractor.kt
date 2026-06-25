@@ -24,8 +24,8 @@ object StreamExtractor {
         "Referer" to "https://www.lookmovie2.to/"
     )
 
-    // === LOOKMOVIE DIRECT EXTRACTION ===
-    suspend fun extract(tmdbId: Int, isMovie: Boolean, season: Int = 1, episode: Int = 1): String? =
+    // Main method - matches what PlayerActivity expects
+    suspend fun extract(tmdbId: Int, isMovie: Boolean, season: Int = 1, episode: Int = 1): String? = 
         extractLookMovie(tmdbId, isMovie, season, episode)
 
     suspend fun extractLookMovie(tmdbId: Int, isMovie: Boolean, season: Int = 1, episode: Int = 1): String? = withContext(Dispatchers.IO) {
@@ -38,7 +38,7 @@ object StreamExtractor {
             }
 
             val request = Request.Builder().url(playUrl).apply {
-                headers.forEach { addHeader(it.key, it.value) }
+                headers.forEach { (k, v) -> addHeader(k, v) }
             }.build()
 
             val response = client.newCall(request).execute()
@@ -48,7 +48,7 @@ object StreamExtractor {
             if (html.contains("Thread Defence", ignoreCase = true) || 
                 html.contains("recaptcha", ignoreCase = true) || 
                 html.contains("challenge", ignoreCase = true)) {
-                Log.d(TAG, "Verification needed")
+                Log.d(TAG, "Verification needed for $finalUrl")
                 return@withContext finalUrl
             }
 
@@ -73,27 +73,27 @@ object StreamExtractor {
                 val apiUrl = "$base/api/v1/security/$apiPath?$idKey=$id&hash=$hash"
 
                 val apiRequest = Request.Builder().url(apiUrl).apply {
-                    headers.forEach { addHeader(it.key, it.value) }
+                    headers.forEach { (k, v) -> addHeader(k, v) }
                 }.build()
 
                 val apiResp = client.newCall(apiRequest).execute()
                 val jsonStr = apiResp.body?.string() ?: return@withContext finalUrl
-                val json = JSONObject(jsonStr)
-                val streams = json.optJSONObject("streams") ?: json.optJSONObject("data")?.optJSONObject("streams")
 
-                if (streams != null && streams.length() > 0) {
-                    val directUrl = streams.getString(streams.keys().next())
+                val json = JSONObject(jsonStr)
+                val streamsObj = json.optJSONObject("streams") ?: json.optJSONObject("data")?.optJSONObject("streams")
+                if (streamsObj != null && streamsObj.length() > 0) {
+                    val directUrl = streamsObj.getString(streamsObj.keys().next())
                     Log.d(TAG, "✅ Direct LookMovie stream: $directUrl")
                     return@withContext directUrl
                 }
             }
             return@withContext finalUrl
         } catch (e: Exception) {
-            Log.e(TAG, "LookMovie failed", e)
+            Log.e(TAG, "LookMovie extraction error", e)
             return@withContext null
         }
     }
 
-    // Legacy compatibility
+    // Compatibility
     fun getLastChallengeUrl(): String? = null
 }
