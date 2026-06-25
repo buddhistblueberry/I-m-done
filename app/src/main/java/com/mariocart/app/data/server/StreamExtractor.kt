@@ -14,21 +14,35 @@ object StreamExtractor {
     private const val TAG = "StreamExtractor"
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(25, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
 
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer" to "https://www.lookmovie2.to/"
+        "Referer" to "https://www.lookmovie2.to/",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     )
 
-    // Main entry point - flexible to match PlayerActivity calls
+    // Overloads to handle different call signatures from PlayerActivity
     suspend fun extract(tmdbId: Any, contentType: Any = "movie", season: Any = 1, episode: Any = 1): String? {
+        return extractWithExtras(tmdbId, contentType, season, episode)
+    }
+
+    suspend fun extract(tmdbId: Any, contentType: Any, season: Any, episode: Any, extra1: Any?, extra2: Any?): String? {
+        return extractWithExtras(tmdbId, contentType, season, episode)
+    }
+
+    private suspend fun extractWithExtras(
+        tmdbId: Any,
+        contentType: Any = "movie",
+        season: Any = 1,
+        episode: Any = 1
+    ): String? {
         val id = tmdbId.toString().toIntOrNull() ?: return null
         val isMovie = contentType.toString().lowercase().contains("movie") || 
-                     contentType.toString() == "true"
+                     contentType.toString().equals("true", ignoreCase = true)
         val s = season.toString().toIntOrNull() ?: 1
         val e = episode.toString().toIntOrNull() ?: 1
         return extractLookMovie(id, isMovie, s, e)
@@ -51,20 +65,15 @@ object StreamExtractor {
             val html = response.body?.string() ?: return@withContext null
             val finalUrl = response.request.url.toString()
 
-            // Handle verification pages
-            if (html.contains("Thread Defence", ignoreCase = true) || 
-                html.contains("recaptcha", ignoreCase = true) || 
-                html.contains("challenge", ignoreCase = true) ||
-                html.contains("verify you are human", ignoreCase = true)) {
-                Log.d(TAG, "Verification needed: $finalUrl")
+            if (isVerificationPage(html)) {
+                Log.w(TAG, "Verification needed: $finalUrl")
                 return@withContext finalUrl
             }
 
-            // Extract storage data
             val storageRegex = if (isMovie) {
-                Pattern.compile("""movie_storage"\]\s*=\s*(\{.*?\});""", Pattern.DOTALL)
+                Pattern.compile("""movie_storage["']\s*=\s*(\{.*?\});""", Pattern.DOTALL)
             } else {
-                Pattern.compile("""show_storage"\]\s*=\s*(\{.*?\});""", Pattern.DOTALL)
+                Pattern.compile("""show_storage["']\s*=\s*(\{.*?\});""", Pattern.DOTALL)
             }
 
             val matcher = storageRegex.matcher(html)
@@ -77,9 +86,9 @@ object StreamExtractor {
 
             if (hashMatcher.find() && idMatcher.find()) {
                 val hash = hashMatcher.group(1)
-                val idVal = idMatcher.group(1)
+                val itemId = idMatcher.group(1)
                 val apiPath = if (isMovie) "movie-access" else "episode-access"
-                val apiUrl = "$base/api/v1/security/$apiPath?$idKey=$idVal&hash=$hash"
+                val apiUrl = "$base/api/v1/security/$apiPath?$idKey=$itemId&hash=$hash"
 
                 val apiRequest = Request.Builder().url(apiUrl).apply {
                     headers.forEach { (k, v) -> addHeader(k, v) }
@@ -92,18 +101,23 @@ object StreamExtractor {
                 val streams = json.optJSONObject("streams") ?: json.optJSONObject("data")?.optJSONObject("streams")
                 if (streams != null && streams.length() > 0) {
                     val directUrl = streams.getString(streams.keys().next())
-                    Log.d(TAG, "✅ Direct LookMovie stream found: $directUrl")
+                    Log.i(TAG, "✅ Direct stream: $directUrl")
                     return@withContext directUrl
                 }
             }
-
-            return@withContext finalUrl // fallback to embed
+            return@withContext finalUrl
         } catch (e: Exception) {
-            Log.e(TAG, "LookMovie extraction failed", e)
+            Log.e(TAG, "Error extracting stream", e)
             return@withContext null
         }
     }
 
-    // Legacy compatibility
+    private fun isVerificationPage(html: String): Boolean {
+        return html.contains("Thread Defence", ignoreCase = true) ||
+               html.contains("recaptcha", ignoreCase = true) ||
+               html.contains("challenge", ignoreCase = true) ||
+               html.contains("verify you are human", ignoreCase = true)
+    }
+
     fun getLastChallengeUrl(): String? = null
 }
