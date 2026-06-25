@@ -8,21 +8,19 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.webkit.CookieManager as WebCookieManager
+import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ProgressBar
 import androidx.appcompat.app.AppCompatActivity
-import java.net.HttpCookie
-import java.net.URI
 
 class VerificationActivity : AppCompatActivity() {
 
     companion object {
         private const val EXTRA_URL = "extra_url"
-        private const val VERIFICATION_TIMEOUT_MS = 120000L // 2 minutes
-
+        private const val VERIFICATION_TIMEOUT_MS = 60000L // 60 seconds
+        
         fun newIntent(context: Context, url: String): Intent {
             return Intent(context, VerificationActivity::class.java).apply {
                 putExtra(EXTRA_URL, url)
@@ -32,6 +30,8 @@ class VerificationActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
+    private var verificationStartTime = 0L
+    private var lastLoadedUrl = ""
     private var timeoutHandler: Handler? = null
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -43,46 +43,27 @@ class VerificationActivity : AppCompatActivity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     progressBar.visibility = View.VISIBLE
+                    lastLoadedUrl = url ?: ""
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     progressBar.visibility = View.GONE
+                    lastLoadedUrl = url ?: ""
                     
-                    // Sync cookies from WebView to our app's CookieManager
-                    url?.let { currentUrl ->
-                        val webCookieManager = WebCookieManager.getInstance()
-                        val cookiesString = webCookieManager.getCookie(currentUrl)
-                        if (cookiesString != null) {
-                            val javaCookieManager = com.mariocart.app.data.server.StreamExtractor.getCookieManager()
-                            try {
-                                val uri = URI.create(currentUrl)
-                                cookiesString.split(";").forEach {
-                                    try {
-                                        val cookieParts = it.split("=").map { it.trim() }
-                                        if (cookieParts.size >= 2) {
-                                            val cookie = HttpCookie(cookieParts[0], cookieParts[1])
-                                            cookie.domain = uri.host
-                                            cookie.path = "/"
-                                            javaCookieManager.cookieStore.add(uri, cookie)
-                                        }
-                                    } catch (e: Exception) {}
-                                }
-                            } catch (e: Exception) {}
+                    if (url != null && !isChallengeUrl(url)) {
+                        if (!isClickbaitPage(url)) {
+                            setResult(RESULT_OK)
+                            finish()
                         }
-                    }
-
-                    // Check if the user has returned to a "normal" URL or if the challenge is gone
-                    if (url != null && !isChallengeUrl(url) && !isClickbaitPage(url)) {
-                        setResult(RESULT_OK)
-                        finish()
                     }
                 }
 
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                    return false // Let WebView handle redirects
+                    return false
                 }
             }
         }
@@ -105,6 +86,7 @@ class VerificationActivity : AppCompatActivity() {
             return
         }
         
+        verificationStartTime = System.currentTimeMillis()
         setupVerificationTimeout()
         webView.loadUrl(url)
     }
@@ -121,9 +103,16 @@ class VerificationActivity : AppCompatActivity() {
 
     private fun isChallengeUrl(url: String): Boolean {
         val lower = url.lowercase()
-        return lower.contains("verify") || lower.contains("captcha") || 
-               lower.contains("checkpoint") || lower.contains("challenge") ||
-               lower.contains("vidsrc.to") || lower.contains("vidsrc.me")
+        val isChallenge = lower.contains("verify") || lower.contains("captcha") || 
+                         lower.contains("checkpoint") || lower.contains("challenge")
+        
+        val isClickbait = lower.contains("click") || lower.contains("ads") || 
+                         lower.contains("pop") || lower.contains("redirect") ||
+                         lower.contains("bet") || lower.contains("game") ||
+                         lower.contains("casino") || lower.contains("porn") ||
+                         lower.contains("dating") || lower.contains("survey")
+        
+        return isChallenge && !isClickbait
     }
 
     private fun isClickbaitPage(url: String): Boolean {
@@ -149,5 +138,6 @@ class VerificationActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         timeoutHandler?.removeCallbacksAndMessages(null)
+        webView.destroy()
     }
 }
