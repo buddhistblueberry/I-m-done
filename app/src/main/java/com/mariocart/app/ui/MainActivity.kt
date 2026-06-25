@@ -114,6 +114,7 @@ fun MainApp(onPlayContent: (TmdbItem) -> Unit) {
     }
 }
 
+// TopNavBar and BottomNav remain the same as before...
 @Composable
 fun TopNavBar(
     selectedTab: Int,
@@ -132,13 +133,8 @@ fun TopNavBar(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = "\uD83C\uDF44",
-            fontSize = 18.sp,
-            modifier = Modifier.padding(end = 4.dp)
-        )
+        Text(text = "\uD83C\uDF44", fontSize = 18.sp, modifier = Modifier.padding(end = 4.dp))
         Spacer(modifier = Modifier.width(4.dp))
-
         tabs.forEachIndexed { index, label ->
             val isSelected = selectedTab == index
             Text(
@@ -154,7 +150,6 @@ fun TopNavBar(
             )
             Spacer(modifier = Modifier.width(4.dp))
         }
-
         Spacer(modifier = Modifier.weight(1f))
         IconButton(onClick = onSearchClick) {
             Icon(Icons.Default.Search, contentDescription = "Search", tint = TextPrimary)
