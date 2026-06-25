@@ -4,23 +4,30 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import android.view.ViewGroup.LayoutParams
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import com.mariocart.app.data.server.StreamExtractor
 import com.mariocart.app.ui.theme.MarioCartTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
+@UnstableApi
 class PlayerActivity : ComponentActivity() {
 
     private var exoPlayer: ExoPlayer? = null
@@ -61,7 +68,7 @@ class PlayerActivity : ComponentActivity() {
         val title = intent.getStringExtra(EXTRA_TITLE) ?: "Playing"
 
         if (tmdbId == -1) {
-            Toast.makeText(this, "Invalid content ID", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Invalid content", Toast.LENGTH_SHORT).show()
             finish()
             return
         }
@@ -70,16 +77,40 @@ class PlayerActivity : ComponentActivity() {
             MarioCartTheme {
                 PlayerScreen(
                     title = title,
-                    onPlayClick = { playStream(tmdbId, contentType, season, episode) },
-                    onBackClick = { finish() }
+                    tmdbId = tmdbId,
+                    contentType = contentType,
+                    season = season,
+                    episode = episode
                 )
             }
         }
     }
 
-    private fun playStream(tmdbId: Int, contentType: String, season: Int, episode: Int) {
-        scope.launch {
+    @Composable
+    fun PlayerScreen(
+        title: String,
+        tmdbId: Int,
+        contentType: String,
+        season: Int,
+        episode: Int
+    ) {
+        var isLoading by remember { mutableStateOf(true) }
+        var errorMessage by remember { mutableStateOf<String?>(null) }
+        val context = LocalContext.current
+
+        var player by remember { mutableStateOf<ExoPlayer?>(null) }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                player?.release()
+            }
+        }
+
+        LaunchedEffect(tmdbId) {
             try {
+                isLoading = true
+                errorMessage = null
+
                 val streamUrl = StreamExtractor.extract(
                     tmdbId = tmdbId,
                     contentType = contentType,
@@ -88,29 +119,102 @@ class PlayerActivity : ComponentActivity() {
                 )
 
                 if (streamUrl.isNullOrEmpty()) {
-                    Toast.makeText(this@PlayerActivity, "Failed to get stream URL", Toast.LENGTH_LONG).show()
-                    return@launch
+                    errorMessage = "Failed to extract stream URL"
+                    isLoading = false
+                    return@LaunchedEffect
                 }
 
-                Log.i("PlayerActivity", "✅ Playing stream: $streamUrl")
-                initializePlayer(streamUrl)
+                Log.i("PlayerActivity", "✅ Playing: $streamUrl")
+
+                val exo = ExoPlayer.Builder(context).build().apply {
+                    val mediaItem = MediaItem.Builder().setUri(streamUrl).build()
+                    setMediaItem(mediaItem)
+                    prepare()
+                    playWhenReady = true
+                }
+
+                player = exo
+                isLoading = false
             } catch (e: Exception) {
-                Log.e("PlayerActivity", "Error extracting stream", e)
-                Toast.makeText(this@PlayerActivity, "Playback error: ${e.message}", Toast.LENGTH_LONG).show()
+                Log.e("PlayerActivity", "Error", e)
+                errorMessage = e.message ?: "Playback error"
+                isLoading = false
             }
         }
-    }
 
-    private fun initializePlayer(url: String) {
-        exoPlayer?.release()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            if (player != null) {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            this.player = player
+                            useController = true
+                            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
 
-        exoPlayer = ExoPlayer.Builder(this).build().apply {
-            val mediaItem = MediaItem.Builder()
-                .setUri(url)
-                .build()
-            setMediaItem(mediaItem)
-            prepare()
-            playWhenReady = true
+            // Loading indicator
+            if (isLoading) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                }
+            }
+
+            // Error message
+            if (errorMessage != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "Playback Error",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = errorMessage ?: "",
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(onClick = { finish() }) {
+                        Text("Back")
+                    }
+                }
+            }
+
+            // Top Bar with title and back button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                    .statusBarsPadding(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { finish() }) {
+                    Text("←", fontSize = 24.sp, color = Color.White)
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White,
+                    maxLines = 1
+                )
+            }
         }
     }
 
@@ -123,44 +227,5 @@ class PlayerActivity : ComponentActivity() {
         super.onDestroy()
         exoPlayer?.release()
         exoPlayer = null
-    }
-}
-
-@Composable
-fun PlayerScreen(
-    title: String,
-    onPlayClick: () -> Unit,
-    onBackClick: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-
-        Spacer(modifier = Modifier.height(48.dp))
-
-        Button(
-            onClick = onPlayClick,
-            modifier = Modifier.fillMaxWidth(0.8f)
-        ) {
-            Text("▶ Play Stream")
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        OutlinedButton(
-            onClick = onBackClick,
-            modifier = Modifier.fillMaxWidth(0.8f)
-        ) {
-            Text("Back")
-        }
     }
 }
