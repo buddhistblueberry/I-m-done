@@ -1,4 +1,3 @@
-// app/src/main/java/com/mariocart/app/ui/player/PlayerActivity.kt
 package com.mariocart.app.ui.player
 
 import android.content.Context
@@ -83,44 +82,45 @@ fun PlayerScreen(
     var retryCount by remember { mutableStateOf(0) }
     val maxRetries = 2
 
-    // Improved extraction with retry
     LaunchedEffect(tmdbId, contentType, season, episode, retryCount) {
         isLoading = true
         error = null
 
         try {
-            Log.d("Player", "Extracting stream for $tmdbId ($contentType)")
+            Log.d("Player", "Extracting stream for TMDB $tmdbId ($contentType)")
             val url = StreamExtractor.extract(tmdbId, contentType, season, episode)
 
             if (!url.isNullOrBlank()) {
                 streamUrl = url
-                Log.i("Player", "✅ Stream ready: $url")
+                Log.i("Player", "✅ Stream URL ready")
             } else {
-                throw Exception("No stream URL returned")
+                throw Exception("No stream URL returned from extractor")
             }
         } catch (e: Exception) {
             Log.e("Player", "Extraction failed (attempt ${retryCount + 1})", e)
             if (retryCount < maxRetries) {
                 retryCount++
-                delay(1500) // brief backoff
+                delay(1500)
             } else {
-                error = "Failed to load stream. Try another title or check connection."
+                error = "Failed to load video stream. Try a different title."
             }
         } finally {
             isLoading = false
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
         when {
             isLoading -> {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    CircularProgressIndicator()
                     Spacer(Modifier.height(16.dp))
-                    Text("Loading stream...", color = MaterialTheme.colorScheme.onBackground)
+                    Text("Loading stream from servers...", color = MaterialTheme.colorScheme.onBackground)
                 }
             }
-
             error != null -> {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -129,11 +129,10 @@ fun PlayerScreen(
                     Text("⚠️ $error", color = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = { (context as? ComponentActivity)?.finish() }) {
-                        Text("Back to Browse")
+                        Text("Back")
                     }
                 }
             }
-
             streamUrl != null -> {
                 AndroidView(
                     factory = { ctx ->
@@ -142,16 +141,12 @@ fun PlayerScreen(
                             prepare()
                             playWhenReady = true
                         }
-
                         PlayerView(ctx).apply {
                             this.player = player
                             useController = true
-                            controllerAutoShow = true
                         }
                     },
-                    modifier = Modifier.fillMaxSize(),
-                    // Key prevents recreating player unnecessarily on recomposition
-                    key = streamUrl
+                    modifier = Modifier.fillMaxSize()
                 )
             }
         }
