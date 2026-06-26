@@ -24,13 +24,15 @@ class MainActivity : ComponentActivity() {
                 ) {
                     HomeScreen(
                         onItemClick = { item ->
-                            // item is TmdbItem - adjust based on your TmdbItem structure
+                            // Safe handling - adjust property names if your TmdbItem has different fields
+                            val tmdbId = item.id // most common field name
+                            val contentType = if (item.type == "tv" || item.mediaType == "tv") "tv" else "movie"
+
                             val intent = PlayerActivity.newIntent(
                                 context = this,
-                                tmdbId = item.id,           // assuming TmdbItem has .id
-                                contentType = if (item.isTvShow) "tv" else "movie", // adjust as needed
-                                season = 1,
-                                episode = 1
+                                tmdbId = tmdbId,
+                                contentType = contentType
+                                // season/episode default to 1 for movies or first episode
                             )
                             startActivity(intent)
                         }
