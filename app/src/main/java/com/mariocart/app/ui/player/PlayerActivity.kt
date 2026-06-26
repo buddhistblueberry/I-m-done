@@ -15,6 +15,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -86,11 +88,11 @@ fun PlayerScreen(
         try {
             Log.d("Player", "🔍 Starting extraction for TMDB $tmdbId ($contentType S$season E$episode)")
             val url = StreamExtractor.extract(tmdbId, contentType, season, episode)
-            if (!url.isNullOrBlank()) {
+            if (!url.isNullOrBlank() && (url.endsWith(".m3u8") || url.endsWith(".mp4") || url.contains("video"))) {
                 streamUrl = url
-                Log.i("Player", "✅ Stream URL ready")
+                Log.i("Player", "✅ Direct stream URL ready: $url")
             } else {
-                throw Exception("StreamExtractor returned empty URL")
+                throw Exception("No direct playable stream found (got embed?)")
             }
         } catch (e: Exception) {
             Log.e("Player", "💥 Extraction failed", e)
@@ -98,7 +100,7 @@ fun PlayerScreen(
                 retryCount++
                 delay(1500)
             } else {
-                error = "Failed to load stream.\n\n${e.message?.take(120) ?: e::class.simpleName}"
+                error = "Failed to load stream.\n\nTry another title or check logs."
             }
         } finally {
             isLoading = false
@@ -124,18 +126,34 @@ fun PlayerScreen(
                 }
             }
             streamUrl != null -> {
+                var player: ExoPlayer? by remember { mutableStateOf(null) }
+
                 AndroidView(
                     factory = { ctx ->
-                        val player = ExoPlayer.Builder(ctx).build().apply {
+                        val exoPlayer = ExoPlayer.Builder(ctx).build().apply {
+                            addListener(object : Player.Listener {
+                                override fun onPlaybackStateChanged(state: Int) {
+                                    Log.d("ExoPlayer", "State changed: $state")
+                                }
+
+                                override fun onPlayerError(error: PlaybackException) {
+                                    Log.e("ExoPlayer", "Playback error: ${error.errorCodeName} - ${error.message}")
+                                }
+                            })
                             setMediaItem(MediaItem.fromUri(streamUrl!!))
                             prepare()
                             playWhenReady = true
                         }
+                        player = exoPlayer
+
                         PlayerView(ctx).apply {
-                            this.player = player
+                            this.player = exoPlayer
                             useController = true
+                            controllerShowTimeoutMs = 3000
                         }
                     },
+                    update = {},
+                    onRelease = { player?.release() },
                     modifier = Modifier.fillMaxSize()
                 )
             }
