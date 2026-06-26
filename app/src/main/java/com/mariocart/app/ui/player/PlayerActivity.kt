@@ -51,6 +51,7 @@ class PlayerActivity : ComponentActivity() {
         val episode = intent.getIntExtra("EPISODE", 1)
 
         if (tmdbId == -1) {
+            Log.e("PlayerActivity", "Invalid TMDB ID")
             finish()
             return
         }
@@ -71,7 +72,6 @@ fun PlayerScreen(
     season: Int,
     episode: Int
 ) {
-    val context = LocalContext.current
     var streamUrl by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -83,21 +83,22 @@ fun PlayerScreen(
         error = null
 
         try {
-            Log.d("Player", "Extracting for TMDB $tmdbId")
+            Log.d("Player", "Starting stream extraction for TMDB $tmdbId")
             val url = StreamExtractor.extract(tmdbId, contentType, season, episode)
+            
             if (!url.isNullOrBlank()) {
                 streamUrl = url
-                Log.i("Player", "✅ Stream ready: $url")
+                Log.i("Player", "✅ Got stream URL: $url")
             } else {
-                throw Exception("No stream URL returned")
+                throw Exception("StreamExtractor returned empty URL")
             }
         } catch (e: Exception) {
-            Log.e("Player", "Extraction failed (attempt ${retryCount+1})", e)
+            Log.e("Player", "Extraction failed", e)
             if (retryCount < maxRetries) {
                 retryCount++
-                delay(1500)
+                delay(2000)
             } else {
-                error = "Failed to load stream. Try another title."
+                error = "Could not load stream.\n\nError: ${e.message?.take(100)}"
             }
         } finally {
             isLoading = false
@@ -110,29 +111,35 @@ fun PlayerScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(16.dp))
-                    Text("Finding best stream...", color = MaterialTheme.colorScheme.onBackground)
+                    Text("Finding stream for TMDB $tmdbId...", color = MaterialTheme.colorScheme.onBackground)
                 }
             }
             error != null -> {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
                     Text("⚠️ $error", color = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.height(16.dp))
-                    Button(onClick = { (context as? ComponentActivity)?.finish() }) {
-                        Text("Back")
+                    Button(onClick = { finish() }) {
+                        Text("Back to Home")
                     }
                 }
             }
             streamUrl != null -> {
                 AndroidView(
                     factory = { ctx ->
-                        val player = ExoPlayer.Builder(ctx).build().apply {
-                            setMediaItem(MediaItem.fromUri(streamUrl!!))
-                            prepare()
-                            playWhenReady = true
-                        }
-                        PlayerView(ctx).apply {
-                            this.player = player
-                            useController = true
+                        try {
+                            val player = ExoPlayer.Builder(ctx).build().apply {
+                                setMediaItem(MediaItem.fromUri(streamUrl!!))
+                                prepare()
+                                playWhenReady = true
+                            }
+                            PlayerView(ctx).apply {
+                                this.player = player
+                                useController = true
+                            }
+                        } catch (e: Exception) {
+                            Log.e("ExoPlayer", "Player init failed", e)
+                            error = "Player failed to start: ${e.message}"
+                            null
                         }
                     },
                     modifier = Modifier.fillMaxSize()
