@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -76,28 +77,29 @@ fun PlayerScreen(
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var retryCount by remember { mutableStateOf(0) }
-    val maxRetries = 2
+    val maxRetries = 3
 
     LaunchedEffect(tmdbId, contentType, season, episode, retryCount) {
         isLoading = true
         error = null
 
         try {
-            Log.d("Player", "Trying to extract stream for $tmdbId")
+            Log.d("Player", "Extracting stream for TMDB $tmdbId")
             val url = StreamExtractor.extract(tmdbId, contentType, season, episode)
+
             if (!url.isNullOrBlank()) {
                 streamUrl = url
-                Log.i("Player", "✅ Stream loaded")
+                Log.i("Player", "✅ Got URL: $url")
             } else {
-                throw Exception("No URL returned")
+                throw Exception("StreamExtractor returned null")
             }
         } catch (e: Exception) {
             Log.e("Player", "Extraction failed", e)
             if (retryCount < maxRetries) {
                 retryCount++
-                delay(1500)
+                delay(1200)
             } else {
-                error = "Failed to load video. Try another title."
+                error = "Failed to find video stream.\nTry another title."
             }
         } finally {
             isLoading = false
@@ -110,29 +112,39 @@ fun PlayerScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(16.dp))
-                    Text("Loading stream...", color = MaterialTheme.colorScheme.onBackground)
+                    Text("Finding stream...", color = MaterialTheme.colorScheme.onBackground)
                 }
             }
             error != null -> {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(24.dp)
+                ) {
                     Text("⚠️ $error", color = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = { (context as? ComponentActivity)?.finish() }) {
-                        Text("Back")
+                        Text("Back to Home")
                     }
                 }
             }
             streamUrl != null -> {
                 AndroidView(
                     factory = { ctx ->
-                        val player = ExoPlayer.Builder(ctx).build().apply {
-                            setMediaItem(MediaItem.fromUri(streamUrl!!))
-                            prepare()
-                            playWhenReady = true
-                        }
-                        PlayerView(ctx).apply {
-                            this.player = player
-                            useController = true
+                        try {
+                            val player = ExoPlayer.Builder(ctx).build().apply {
+                                setMediaItem(MediaItem.fromUri(streamUrl!!))
+                                prepare()
+                                playWhenReady = true
+                            }
+
+                            PlayerView(ctx).apply {
+                                this.player = player
+                                useController = true
+                                controllerAutoShow = true
+                            }
+                        } catch (e: Exception) {
+                            Log.e("ExoPlayer", "Failed to initialize", e)
+                            null
                         }
                     },
                     modifier = Modifier.fillMaxSize()
