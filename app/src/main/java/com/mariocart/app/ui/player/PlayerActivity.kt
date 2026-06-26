@@ -84,21 +84,21 @@ fun PlayerScreen(
         error = null
 
         try {
-            Log.d("Player", "🔍 Starting extraction for TMDB $tmdbId")
+            Log.d("Player", "🔍 Extracting for TMDB $tmdbId")
             val url = StreamExtractor.extract(tmdbId, contentType, season, episode)
             if (!url.isNullOrBlank()) {
                 streamUrl = url
-                Log.i("Player", "✅ Got stream: ${url.take(100)}...")
+                Log.i("Player", "✅ Stream ready")
             } else {
-                throw Exception("StreamExtractor returned null/empty")
+                throw Exception("No stream URL returned")
             }
         } catch (e: Exception) {
-            Log.e("Player", "💥 Extraction crashed", e)
+            Log.e("Player", "Extraction failed", e)
             if (retryCount < maxRetries) {
                 retryCount++
                 delay(1500)
             } else {
-                error = "Failed to load stream.\nError: ${e.message?.take(80)}"
+                error = "Failed to load stream. Try another title."
             }
         } finally {
             isLoading = false
@@ -111,7 +111,7 @@ fun PlayerScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(16.dp))
-                    Text("Finding stream for TMDB $tmdbId...", color = MaterialTheme.colorScheme.onBackground)
+                    Text("Loading stream...", color = MaterialTheme.colorScheme.onBackground)
                 }
             }
             error != null -> {
@@ -126,24 +126,22 @@ fun PlayerScreen(
             streamUrl != null -> {
                 AndroidView(
                     factory = { ctx ->
-                        try {
-                            val player = ExoPlayer.Builder(ctx).build().apply {
-                                setMediaItem(MediaItem.fromUri(streamUrl!!))
-                                prepare()
-                                playWhenReady = true
-                            }
-                            PlayerView(ctx).apply {
-                                this.player = player
-                                useController = true
-                            }
-                        } catch (e: Exception) {
-                            Log.e("ExoPlayer", "Player creation failed", e)
-                            error = "Player failed: ${e.message}"
-                            null
+                        val player = ExoPlayer.Builder(ctx).build().apply {
+                            setMediaItem(MediaItem.fromUri(streamUrl!!))
+                            prepare()
+                            playWhenReady = true
+                        }
+                        PlayerView(ctx).apply {
+                            this.player = player
+                            useController = true
                         }
                     },
                     modifier = Modifier.fillMaxSize()
                 )
+            }
+            else -> {
+                // Fallback
+                Text("Waiting for stream...", color = MaterialTheme.colorScheme.onBackground)
             }
         }
     }
