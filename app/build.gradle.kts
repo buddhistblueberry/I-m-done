@@ -1,7 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("com.chaquo.python") version "15.0.1"
+    id("com.chaquo.python") version "15.0.1" apply false
 }
 
 android {
@@ -48,7 +48,7 @@ android {
     }
 }
 
-// ←←← Chaquopy configuration must be OUTSIDE android {} block
+// Chaquopy configuration (must be at root level, outside android {})
 python {
     version = "3.11"
     pip {
@@ -75,7 +75,7 @@ dependencies {
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
     implementation("com.google.code.gson:gson:2.11.0")
 
-    // Coil for images
+    // Coil
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     testImplementation("junit:junit:4.13.2")
