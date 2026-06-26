@@ -23,13 +23,14 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     HomeScreen(
-                        onItemClick = { tmdbId, contentType, season, episode ->
+                        onItemClick = { item ->
+                            // item is TmdbItem - adjust based on your TmdbItem structure
                             val intent = PlayerActivity.newIntent(
                                 context = this,
-                                tmdbId = tmdbId,
-                                contentType = contentType,
-                                season = season ?: 1,
-                                episode = episode ?: 1
+                                tmdbId = item.id,           // assuming TmdbItem has .id
+                                contentType = if (item.isTvShow) "tv" else "movie", // adjust as needed
+                                season = 1,
+                                episode = 1
                             )
                             startActivity(intent)
                         }
