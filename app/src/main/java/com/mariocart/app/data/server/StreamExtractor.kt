@@ -41,13 +41,16 @@ object StreamExtractor {
             val json = JSONObject(resultJson)
             if (json.has("url")) {
                 val url = json.getString("url")
-                Log.i("StreamExtractor", "✅ LookMovie stream: $url")
+                Log.i("StreamExtractor", "✅ LookMovie stream found: $url")
                 return@withContext url
+            } else if (json.has("error")) {
+                Log.e("StreamExtractor", "Error: ${json.getString("error")}")
             }
         } catch (e: Exception) {
-            Log.e("StreamExtractor", "Python failed", e)
+            Log.e("StreamExtractor", "Python scraper error", e)
         }
 
-        return@withContext null  // fallback to your old logic if needed
+        // Fallback to your old method if needed
+        return@withContext null
     }
 }
