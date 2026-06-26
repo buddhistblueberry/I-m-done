@@ -46,12 +46,13 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.1"
     }
+}
 
-    python {
-        version = "3.11"
-        pip {
-            install("requests")
-        }
+// ←←← Chaquopy configuration must be OUTSIDE android {} block
+python {
+    version = "3.11"
+    pip {
+        install("requests")
     }
 }
 
@@ -74,7 +75,7 @@ dependencies {
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
     implementation("com.google.code.gson:gson:2.11.0")
 
-    // Coil
+    // Coil for images
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     testImplementation("junit:junit:4.13.2")
