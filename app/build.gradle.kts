@@ -15,8 +15,6 @@ android {
         versionCode = 1
         versionName = "1.1.1"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }
@@ -76,7 +74,7 @@ dependencies {
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
     implementation("com.google.code.gson:gson:2.11.0")
 
-    // Coil for images
+    // Coil
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     testImplementation("junit:junit:4.13.2")
