@@ -1,6 +1,6 @@
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android' version '1.9.22' apply false   // ← Pinned to match Compose 1.5.14
+    id 'org.jetbrains.kotlin.android'
 }
 
 android {
