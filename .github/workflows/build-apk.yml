@@ -19,7 +19,10 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Accept SDK licenses
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept licenses
         run: yes | sdkmanager --licenses || true
 
       - name: Make gradlew executable
