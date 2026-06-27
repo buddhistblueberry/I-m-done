@@ -2,17 +2,14 @@ name: Build APK
 
 on:
   push:
-    branches: [ "**" ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Debug APK
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -21,38 +18,24 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Grant execute permission for gradlew
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install NDK (for Chaquopy)
+        run: sdkmanager "ndk;27.0.12077973" || true
+
+      - name: Make gradlew executable
         run: chmod +x gradlew
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Build Debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
-
-      - name: Create release with APK
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: "Build #${{ github.run_number }}"
-          body: "Automated APK build from commit ${{ github.sha }}"
-          files: app/build/outputs/apk/debug/app-debug.apk
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: MarioCart-APK
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
