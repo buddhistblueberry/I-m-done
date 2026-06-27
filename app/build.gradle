@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace 'com.example.mariocart'
-    compileSdk 34   // ← This was missing
+    compileSdk 34
 
     defaultConfig {
         applicationId "com.example.mariocart"
@@ -49,12 +49,6 @@ android {
     }
 }
 
-repositories {
-    google()
-    mavenCentral()
-    maven { url 'https://chaquo.com/maven' }
-}
-
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.6'
@@ -81,7 +75,7 @@ dependencies {
     // Coil
     implementation 'io.coil-kt:coil-compose:2.6.0'
 
-    // Media3 / ExoPlayer
+    // Media3
     implementation 'androidx.media3:media3-exoplayer:1.4.1'
     implementation 'androidx.media3:media3-ui:1.4.1'
 
