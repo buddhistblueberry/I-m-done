@@ -1,6 +1,14 @@
-plugins {
-    id 'com.android.application'
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.5.0'
+    }
 }
+
+apply plugin: 'com.android.application'
 
 android {
     namespace 'com.ashtonhardy.imdone'
