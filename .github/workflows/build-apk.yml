@@ -25,9 +25,6 @@ jobs:
       - name: Accept licenses
         run: yes | sdkmanager --licenses || true
 
-      - name: Install NDK (required by Chaquopy)
-        run: sdkmanager "ndk;27.0.12077973" || true
-
       - name: Make gradlew executable
         run: chmod +x gradlew
 
