@@ -4,6 +4,12 @@ plugins {
     id 'com.chaquo.python' version '15.0.1'
 }
 
+repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://chaquo.com/maven' }  // ← Added for Chaquopy
+}
+
 android {
     namespace 'com.example.mariocart'
     compileSdk 34
@@ -17,7 +23,6 @@ android {
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        // Fix for Chaquopy
         ndk {
             abiFilters "armeabi-v7a", "arm64-v8a"
         }
