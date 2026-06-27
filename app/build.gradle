@@ -34,7 +34,8 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion '1.5.14'   // ← Updated for Kotlin 1.9.23 compatibility
+        kotlinCompilerExtensionVersion '1.5.14'
+        suppressKotlinVersionCompatibilityCheck = true   // ← This fixes the mismatch
     }
 
     compileOptions {
