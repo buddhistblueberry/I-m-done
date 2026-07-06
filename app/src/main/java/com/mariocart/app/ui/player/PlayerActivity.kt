@@ -85,26 +85,39 @@ fun PlayerScreen(
         isLoading = true
         error = null
 
-        Log.d("Player", "🔍 Extracting stream for TMDB $tmdbId ($contentType S$season E$episode)")
+        Log.d("Player", "🔍 Fetching stream for TMDB $tmdbId ($contentType S$season E$episode)")
 
         try {
-            val url = StreamExtractor.extract(
-                context = localContext,
-                tmdbId = tmdbId,
-                contentType = contentType,
-                season = season,
-                episode = episode
-            )
+            // Try Python scraper first
+            var url: String? = try {
+                StreamExtractor.extract(
+                    context = localContext,
+                    tmdbId = tmdbId,
+                    contentType = contentType,
+                    season = season,
+                    episode = episode
+                )
+            } catch (e: Exception) {
+                Log.w("Player", "Python scraper unavailable: ${e.message}")
+                null
+            }
+
+            // Fallback to native stream fetcher
+            if (url.isNullOrBlank()) {
+                Log.d("Player", "Trying native stream fetcher...")
+                val fetcher = StreamFetcher(localContext)
+                url = fetcher.fetchStreamUrl(tmdbId, contentType, season, episode)
+            }
 
             if (!url.isNullOrBlank()) {
                 streamUrl = url
-                Log.i("Player", "✅ Direct stream ready: $url")
+                Log.i("Player", "✅ Stream ready: $url")
             } else {
-                error = "No stream found for this title."
+                error = "Could not find a stream for this title. Try again later."
             }
         } catch (e: Exception) {
-            Log.e("Player", "💥 Extraction failed", e)
-            error = "Failed to load stream. ${e.message}"
+            Log.e("Player", "Stream fetch error: ${e.message}", e)
+            error = "Error loading stream: ${e.message}"
         } finally {
             isLoading = false
         }
@@ -113,50 +126,83 @@ fun PlayerScreen(
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         when {
             isLoading -> {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(24.dp)
+                ) {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(16.dp))
-                    Text("Finding best stream from LookMovie...", color = MaterialTheme.colorScheme.onBackground)
+                    Text(
+                        "Finding stream...",
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
                 }
             }
+
             error != null -> {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
-                    Text("⚠️ $error", color = MaterialTheme.colorScheme.error)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(24.dp)
+                ) {
+                    Text(
+                        "⚠️ ${error}",
+                        color = MaterialTheme.colorScheme.error
+                    )
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = { (localContext as? ComponentActivity)?.finish() }) {
                         Text("Back")
                     }
                 }
             }
+
             streamUrl != null -> {
                 var player: ExoPlayer? by remember { mutableStateOf(null) }
 
+                DisposableEffect(Unit) {
+                    onDispose {
+                        player?.release()
+                    }
+                }
+
                 AndroidView(
                     factory = { ctx ->
-                        val exoPlayer = ExoPlayer.Builder(ctx).build().apply {
-                            addListener(object : Player.Listener {
-                                override fun onPlaybackStateChanged(state: Int) {
-                                    Log.d("ExoPlayer", "State: $state")
-                                }
+                        val exoPlayer = try {
+                            ExoPlayer.Builder(ctx).build().apply {
+                                addListener(object : Player.Listener {
+                                    override fun onPlaybackStateChanged(state: Int) {
+                                        Log.d("ExoPlayer", "State: $state")
+                                    }
 
-                                override fun onPlayerError(error: PlaybackException) {
-                                    Log.e("ExoPlayer", "Error: ${error.errorCodeName} - ${error.message}")
-                                }
-                            })
-                            setMediaItem(MediaItem.fromUri(streamUrl!!))
-                            prepare()
-                            playWhenReady = true
+                                    override fun onPlayerError(error: PlaybackException) {
+                                        Log.e("ExoPlayer", "Playback error: ${error.errorCodeName}")
+                                    }
+                                })
+                                setMediaItem(MediaItem.fromUri(streamUrl!!))
+                                prepare()
+                                playWhenReady = true
+                            }
+                        } catch (e: Exception) {
+                            Log.e("ExoPlayer", "Failed to create player: ${e.message}")
+                            null
                         }
+
                         player = exoPlayer
 
-                        PlayerView(ctx).apply {
-                            this.player = exoPlayer
-                            useController = true
-                            controllerShowTimeoutMs = 3000
+                        if (exoPlayer != null) {
+                            PlayerView(ctx).apply {
+                                this.player = exoPlayer
+                                useController = true
+                                controllerShowTimeoutMs = 3000
+                            }
+                        } else {
+                            android.widget.FrameLayout(ctx).apply {
+                                addView(android.widget.TextView(ctx).apply {
+                                    text = "Failed to initialize player"
+                                })
+                            }
                         }
                     },
                     update = {},
-                    onRelease = { player?.release() },
                     modifier = Modifier.fillMaxSize()
                 )
             }
