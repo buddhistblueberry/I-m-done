@@ -1,4 +1,5 @@
 [versions]
+chaquopy = "15.0.1"
 android-gradle-plugin = "8.4.0"
 kotlin = "1.9.0"
 androidx-core = "1.12.0"
@@ -9,6 +10,7 @@ compose-bom = "2024.02.01"
 [plugins]
 android-application = { id = "com.android.application", version.ref = "android-gradle-plugin" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+chaquopy = { id = "com.chaquo.python", version.ref = "chaquopy" }
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "androidx-core" }

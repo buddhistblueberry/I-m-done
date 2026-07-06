@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.chaquopy)
 }
 
 android {
@@ -64,7 +65,7 @@ dependencies {
     implementation("org.json:json:20230227")
     
     // Python integration (for scraping)
-    implementation("com.chaquo.python:python:15.0.1")
+    // implementation("com.chaquo.python:python:15.0.1") // Handled by plugin
     
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
