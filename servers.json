@@ -9,5 +9,12 @@
   { "name": "AutoEmbed",                  "baseUrl": "https://autoembed.cc/embed" },
   { "name": "Embed.su",                   "baseUrl": "https://embed.su/embed" },
   { "name": "Videasy",                    "baseUrl": "https://player.videasy.net/embed" },
-  { "name": "FileMoon",                   "baseUrl": "https://filemoon.sx/embed" }
+  { "name": "FileMoon",                   "baseUrl": "https://filemoon.sx/embed" },
+  
+  {
+    "name": "LookMovie (Direct HLS)",
+    "baseUrl": "https://www.lookmovie2.to",
+    "type": "custom",
+    "extractor": "lookmovie"
+  }
 ]
