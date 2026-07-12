@@ -1,26 +1,13 @@
 package com.mariocart.app.ui.home
 
 import androidx.compose.foundation.background
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -41,18 +28,18 @@ import com.mariocart.app.ui.theme.Red
 private data class GenreChip(val emoji: String, val label: String, val genreId: String)
 
 private val GENRE_CHIPS = listOf(
-    GenreChip("\uD83D\uDD25", "Trending",    ""),
-    GenreChip("\uD83C\uDFAC", "Action",      "28"),
-    GenreChip("\uD83D\uDE02", "Comedy",      "35"),
-    GenreChip("\uD83D\uDC7B", "Horror",      "27"),
-    GenreChip("\uD83D\uDE80", "Sci-Fi",      "878"),
-    GenreChip("\uD83C\uDFAD", "Drama",       "18"),
-    GenreChip("\uD83D\uDD2A", "Thriller",    "53"),
-    GenreChip("\uD83C\uDF00", "Animation",   "16"),
-    GenreChip("\uD83D\uDC95", "Romance",     "10749"),
-    GenreChip("\uD83D\uDD75", "Crime",       "80"),
-    GenreChip("\uD83C\uDF0D", "Adventure",   "12"),
-    GenreChip("\uD83D\uDCFA", "TV Action",   "10759"),
+    GenreChip("\uD83D\uDD25", "Trending", ""),
+    GenreChip("\uD83C\uDFAC", "Action", "28"),
+    GenreChip("\uD83D\uDE02", "Comedy", "35"),
+    GenreChip("\uD83D\uDC7B", "Horror", "27"),
+    GenreChip("\uD83D\uDE80", "Sci-Fi", "878"),
+    GenreChip("\uD83C\uDFAD", "Drama", "18"),
+    GenreChip("\uD83D\uDD2A", "Thriller", "53"),
+    GenreChip("\uD83C\uDF00", "Animation", "16"),
+    GenreChip("\uD83D\uDC95", "Romance", "10749"),
+    GenreChip("\uD83D\uDD75", "Crime", "80"),
+    GenreChip("\uD83C\uDF0D", "Adventure", "12"),
+    GenreChip("\uD83D\uDCFA", "TV Action", "10759"),
     GenreChip("\uD83D\uDCD6", "Documentary", "99"),
 )
 
