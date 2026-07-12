@@ -12,6 +12,6 @@
 - [x] Call ServerManager.initialize(this) in onCreate
 
 ## 4. Verify & ship
-- [ ] Verify all Kotlin files for syntax correctness
-- [ ] Commit and push branch optimize/perf-lookmovie-alignment
-- [ ] Create Pull Request
+- [x] Verify all Kotlin files for syntax correctness (brace/paren balance confirmed)
+- [x] Commit and push branch optimize/perf-lookmovie-alignment
+- [x] Create Pull Request — PR #11 created
