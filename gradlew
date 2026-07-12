@@ -119,6 +119,6 @@ if $cygwin || $msys ; then
 fi
 
 # Collect all arguments for the java command, we store in a variable so that the set command doesn't overwrite it
-set -- "$DEFAULT_JVM_OPTS" $JAVA_OPTS $GRADLE_OPTS "-Dorg.gradle.appname=$APP_BASE_NAME" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"
+set -- $DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS "-Dorg.gradle.appname=$APP_BASE_NAME" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"
 
 exec "$JAVACMD" "$@"
