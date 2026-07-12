@@ -11,6 +11,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.ui.components.ContentRow
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
 
 @Composable
 fun TvScreen(
