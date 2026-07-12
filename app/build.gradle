@@ -68,7 +68,6 @@ dependencies {
     implementation 'androidx.media3:media3-ui:1.4.1'
 
     // Chaquopy if you still use Python scraping
-    implementation 'com.chaquo.python:chaquopy:15.0.1'
 
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }
