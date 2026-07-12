@@ -1,7 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
-    id 'com.chaquo.python'   // ← This is the correct way
+    id 'com.chaquo.python'
 }
 
 android {
@@ -17,7 +17,6 @@ android {
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        // Required for Chaquopy (Python native libs)
         ndk {
             abiFilters "armeabi-v7a", "arm64-v8a"
         }
@@ -50,26 +49,20 @@ android {
     }
 }
 
-// Chaquopy configuration (add Python code, packages, etc. here)
 chaquopy {
     defaultConfig {
-        // Example: Python version (default is usually 3.8+)
-        // version = "3.11"
-
-        // Example: Python source directory
-        // sourceSets {
-        //     main.srcDir("src/main/python")
-        // }
-
-        // pip requirements if you have any
-        // pip {
-        //     install("requests")
-        // }
+        // Add Python config here later if needed
     }
 }
 
 dependencies {
-    // Your other dependencies here...
+    // ✅ Essential AppCompat dependency (fixes the theme error)
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+
+    // Core Kotlin + AndroidX
     implementation 'androidx.core:core-ktx:1.13.1'
-    // ... add the rest of your app's dependencies
+    implementation 'androidx.activity:activity-ktx:1.9.3'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    // Add any other dependencies your project already uses here
 }
