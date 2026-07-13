@@ -1,0 +1,5 @@
+[
+  {"name": "VidLink", "baseUrl": "https://vidlink.pro", "reliability": 90},
+  {"name": "Videasy", "baseUrl": "https://player.videasy.to", "reliability": 85},
+  {"name": "VidSrc.to", "baseUrl": "https://vidsrc.to", "reliability": 80}
+]
