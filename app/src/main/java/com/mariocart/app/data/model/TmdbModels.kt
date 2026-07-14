@@ -40,6 +40,28 @@ data class TmdbItem(
 
     val isValidMovie: Boolean
         get() = isMovie // All videos identified as movies are valid
+
+    /**
+     * True when the title has already been released/aired.
+     *
+     * TMDB dates come back as ISO strings ("YYYY-MM-dd") which sort
+     * lexicographically, so a plain string comparison against today's date
+     * is sufficient. Items with no date at all are treated as released so
+     * we never accidentally hide legitimate content.
+     */
+    val isReleased: Boolean
+        get() {
+            val dateStr = releaseDate ?: firstAirDate
+            if (dateStr.isNullOrBlank() || dateStr.length < 7) return true
+            val cal = java.util.Calendar.getInstance()
+            val today = String.format(
+                "%04d-%02d-%02d",
+                cal.get(java.util.Calendar.YEAR),
+                cal.get(java.util.Calendar.MONTH) + 1,
+                cal.get(java.util.Calendar.DAY_OF_MONTH)
+            )
+            return dateStr <= today
+        }
 }
 
 data class TvSeasonsResponse(
