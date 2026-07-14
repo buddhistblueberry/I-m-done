@@ -1,7 +1,7 @@
 {
-  "version": 3,
+  "version": 4,
   "updated": "2026-07-14",
-  "description": "Auto-updated list of working TMDB-based stream providers for I-m Done. Fetched by the app at runtime from this file's raw GitHub URL. Edit this file and push to update every install. Dead servers removed; VidSrc.mov added.",
+  "description": "Auto-updated list of working TMDB-based stream providers for I-m Done. Fetched by the app at runtime from this file's raw GitHub URL. Edit this file and push to update every install. Added AutoEmbed.pro + VidFast.pro (sources used by FilmCave / fmcave.lovable.app).",
   "servers": [
     {
       "id": "vidlink",
@@ -11,6 +11,17 @@
       "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
       "tier": 1,
       "reliability": 96,
+      "cloudflare": false,
+      "enabled": true
+    },
+    {
+      "id": "autoembed",
+      "name": "AutoEmbed",
+      "baseUrl": "https://autoembed.pro",
+      "movieUrlTemplate": "{base}/movie/{id}",
+      "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
+      "tier": 1,
+      "reliability": 94,
       "cloudflare": false,
       "enabled": true
     },
@@ -111,6 +122,17 @@
       "tier": 2,
       "reliability": 68,
       "cloudflare": false,
+      "enabled": true
+    },
+    {
+      "id": "vidfast",
+      "name": "VidFast",
+      "baseUrl": "https://vidfast.pro",
+      "movieUrlTemplate": "{base}/movie/{id}",
+      "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
+      "tier": 2,
+      "reliability": 66,
+      "cloudflare": true,
       "enabled": true
     },
     {
