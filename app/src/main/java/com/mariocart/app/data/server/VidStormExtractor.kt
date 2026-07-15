@@ -268,7 +268,6 @@ object VidStormExtractor {
         }
     }
 
-    /**
     private fun verifyUrl(
         url: String,
         headers: Map<String, String>,
