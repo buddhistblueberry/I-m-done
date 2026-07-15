@@ -1,7 +1,7 @@
 {
-  "version": 3,
-  "updated": "2026-07-14",
-  "description": "Auto-updated list of working TMDB-based stream providers for I-m Done. Fetched by the app at runtime from this file's raw GitHub URL. Edit this file and push to update every install. Dead servers removed; VidSrc.mov added.",
+  "version": 4,
+  "updated": "2026-07-15",
+  "description": "Auto-updated list of working TMDB-based stream providers for I-m Done. Fetched by the app at runtime from this file's raw GitHub URL. Edit this file and push to update every install. v4: added MultiEmbed, VidSrc.cc, VidSrc.to, Videasy.net; fixed 2Embed TV templates (embedtv path resolves correct show).",
   "servers": [
     {
       "id": "vidlink",
@@ -19,7 +19,7 @@
       "name": "2Embed.cc",
       "baseUrl": "https://www.2embed.cc",
       "movieUrlTemplate": "{base}/embed/{id}",
-      "tvUrlTemplate": "{base}/embed/tv/{id}/{season}/{episode}",
+      "tvUrlTemplate": "{base}/embedtv/{id}&s={season}&e={episode}",
       "tier": 1,
       "reliability": 90,
       "cloudflare": false,
@@ -30,7 +30,7 @@
       "name": "2Embed.skin",
       "baseUrl": "https://www.2embed.skin",
       "movieUrlTemplate": "{base}/embed/{id}",
-      "tvUrlTemplate": "{base}/embed/tv/{id}/{season}/{episode}",
+      "tvUrlTemplate": "{base}/embedtv/{id}&s={season}&e={episode}",
       "tier": 1,
       "reliability": 86,
       "cloudflare": false,
@@ -44,6 +44,17 @@
       "tvUrlTemplate": "{base}/player.php?type=series&tmdb={id}&season={season}&episode={episode}",
       "tier": 1,
       "reliability": 82,
+      "cloudflare": false,
+      "enabled": true
+    },
+    {
+      "id": "videasy_net",
+      "name": "Videasy.net",
+      "baseUrl": "https://player.videasy.net",
+      "movieUrlTemplate": "{base}/movie/{id}",
+      "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
+      "tier": 1,
+      "reliability": 80,
       "cloudflare": false,
       "enabled": true
     },
@@ -92,6 +103,39 @@
       "enabled": true
     },
     {
+      "id": "vidsrc_cc",
+      "name": "VidSrc.cc",
+      "baseUrl": "https://vidsrc.cc",
+      "movieUrlTemplate": "{base}/v2/embed/movie/{id}",
+      "tvUrlTemplate": "{base}/v2/embed/tv/{id}/{season}/{episode}",
+      "tier": 2,
+      "reliability": 74,
+      "cloudflare": true,
+      "enabled": true
+    },
+    {
+      "id": "vidsrc_to",
+      "name": "VidSrc.to",
+      "baseUrl": "https://vidsrc.to",
+      "movieUrlTemplate": "{base}/embed/movie/{id}",
+      "tvUrlTemplate": "{base}/embed/tv/{id}/{season}/{episode}",
+      "tier": 2,
+      "reliability": 73,
+      "cloudflare": true,
+      "enabled": true
+    },
+    {
+      "id": "multiembed",
+      "name": "MultiEmbed",
+      "baseUrl": "https://multiembed.mov",
+      "movieUrlTemplate": "{base}/?video_id={id}&tmdb=1",
+      "tvUrlTemplate": "{base}/?video_id={id}&tmdb=1&s={season}&e={episode}",
+      "tier": 2,
+      "reliability": 71,
+      "cloudflare": true,
+      "enabled": true
+    },
+    {
       "id": "smashystream",
       "name": "SmashyStream",
       "baseUrl": "https://embed.smashystream.com",
@@ -104,7 +148,7 @@
     },
     {
       "id": "videasy",
-      "name": "Videasy",
+      "name": "Videasy.to",
       "baseUrl": "https://player.videasy.to",
       "movieUrlTemplate": "{base}/movie/{id}",
       "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",

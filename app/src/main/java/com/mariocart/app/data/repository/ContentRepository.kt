@@ -32,6 +32,9 @@ class ContentRepository {
         StreamingServer("2Embed.cc",        "https://www.2embed.cc"),
         StreamingServer("2Embed.skin",      "https://www.2embed.skin"),
         StreamingServer("VidSrc.to",        "https://vidsrc.to"),
+        StreamingServer("MultiEmbed",       "https://multiembed.mov"),
+        StreamingServer("VidSrc.cc",        "https://vidsrc.cc"),
+        StreamingServer("Videasy.net",      "https://player.videasy.net"),
         // Tier 3 — Cloudflare, user captcha fallback
         StreamingServer("Videasy",          "https://player.videasy.to"),
         StreamingServer("VidSrc.in",        "https://vidsrc.in"),
@@ -49,6 +52,20 @@ class ContentRepository {
         items.filter { it.isValidMovie }
 
     /**
+     * Drops any title flagged as adult / pornographic by TMDB.
+     *
+     * This is the **second layer of defense** against adult content. The first
+     * layer is the `include_adult=false` parameter sent on every TMDB API call
+     * (see [com.mariocart.app.data.api.TmdbApi]), which asks the TMDB server to
+     * exclude adult titles from its response. This filter catches anything
+     * that slips through — for example if a future endpoint is added without
+     * the parameter, or if TMDB's server-side filtering has a gap. Every
+     * content-fetch method in this repository pipes its results through this.
+     */
+    private fun filterAdult(items: List<TmdbItem>): List<TmdbItem> =
+        items.filter { !it.isAdult }
+
+    /**
      * Drops items whose release / first-air date is in the future so the user
      * never sees a title they can't actually watch yet. Items with no date
      * are kept (treated as released). Date strings are ISO (YYYY-MM-DD) which
@@ -60,38 +77,41 @@ class ContentRepository {
     suspend fun getTrending(page: Int = 1): List<TmdbItem> =
         runCatching {
             val items = filterEnglish(api.getTrending(key, page = page).results)
-            filterValidMovies(filterReleased(items))
+            filterValidMovies(filterReleased(filterAdult(items)))
         }.getOrDefault(emptyList())
 
     suspend fun getNowPlaying(page: Int = 1): List<TmdbItem> =
         runCatching {
             val items = filterEnglish(api.getNowPlaying(key, page = page).results)
-            filterValidMovies(filterReleased(items))
+            filterValidMovies(filterReleased(filterAdult(items)))
         }.getOrDefault(emptyList())
 
     suspend fun getPopularMovies(page: Int = 1): List<TmdbItem> =
         runCatching {
             val items = filterEnglish(api.getPopularMovies(key, page = page).results)
-            filterValidMovies(filterReleased(items))
+            filterValidMovies(filterReleased(filterAdult(items)))
         }.getOrDefault(emptyList())
 
     suspend fun getTopRatedMovies(page: Int = 1): List<TmdbItem> =
         runCatching {
             val items = filterEnglish(api.getTopRatedMovies(key, page = page).results)
-            filterValidMovies(filterReleased(items))
+            filterValidMovies(filterReleased(filterAdult(items)))
         }.getOrDefault(emptyList())
 
     suspend fun getPopularTV(page: Int = 1): List<TmdbItem> =
-        runCatching { filterReleased(filterEnglish(api.getPopularTV(key, page = page).results)) }
-            .getOrDefault(emptyList())
+        runCatching {
+            filterAdult(filterReleased(filterEnglish(api.getPopularTV(key, page = page).results)))
+        }.getOrDefault(emptyList())
 
     suspend fun getAiringToday(page: Int = 1): List<TmdbItem> =
-        runCatching { filterReleased(filterEnglish(api.getAiringToday(key, page = page).results)) }
-            .getOrDefault(emptyList())
+        runCatching {
+            filterAdult(filterReleased(filterEnglish(api.getAiringToday(key, page = page).results)))
+        }.getOrDefault(emptyList())
 
     suspend fun getTopRatedTV(page: Int = 1): List<TmdbItem> =
-        runCatching { filterReleased(filterEnglish(api.getTopRatedTV(key, page = page).results)) }
-            .getOrDefault(emptyList())
+        runCatching {
+            filterAdult(filterReleased(filterEnglish(api.getTopRatedTV(key, page = page).results)))
+        }.getOrDefault(emptyList())
 
     suspend fun getTvDetails(tvId: Int): TvSeasonsResponse? =
         runCatching { api.getTvDetails(tvId, key) }.getOrNull()
@@ -104,7 +124,7 @@ class ContentRepository {
     ): List<TmdbItem> =
         runCatching {
             val items = filterEnglish(api.discover(type, key, genreId, sortBy = sortBy, page = page).results)
-            filterValidMovies(filterReleased(items))
+            filterValidMovies(filterReleased(filterAdult(items)))
         }.getOrDefault(emptyList())
 
     suspend fun search(
@@ -115,6 +135,6 @@ class ContentRepository {
     ): List<TmdbItem> =
         runCatching {
             val items = filterEnglish(api.search(type, key, query, year = year, page = page).results)
-            filterValidMovies(filterReleased(items))
+            filterValidMovies(filterReleased(filterAdult(items)))
         }.getOrDefault(emptyList())
 }

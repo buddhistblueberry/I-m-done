@@ -10,6 +10,8 @@ import retrofit2.http.Query
 interface TmdbApi {
 
     // Trending
+    // include_adult=false — TMDB never sends adult/pornographic titles so
+    // they can never appear in the trending feed.
     @GET("trending/all/week")
     suspend fun getTrending(
         @Query("api_key") apiKey: String,
@@ -74,6 +76,8 @@ interface TmdbApi {
     ): TvSeasonsResponse
 
     // Discover (genre browsing)
+    // include_adult=false keeps pornographic titles out of every genre browse
+    // and quick-browse chip. The TMDB discover endpoint honours this param.
     @GET("discover/{type}")
     suspend fun discover(
         @Path("type") type: String,
@@ -81,10 +85,15 @@ interface TmdbApi {
         @Query("with_genres") genreId: String? = null,
         @Query("sort_by") sortBy: String = "popularity.desc",
         @Query("with_original_language") language: String = "en",
+        @Query("include_adult") includeAdult: Boolean = false,
         @Query("page") page: Int = 1
     ): TmdbResponse
 
     // Search
+    // include_adult=false is the critical guard for search: without it a user
+    // typing an ambiguous query (or a title that happens to share a name with
+    // an adult film) would see pornographic results. With it, the TMDB search
+    // endpoint filters them server-side before they ever reach the app.
     @GET("search/{type}")
     suspend fun search(
         @Path("type") type: String,
@@ -92,6 +101,7 @@ interface TmdbApi {
         @Query("query") query: String,
         @Query("language") language: String = "en-US",
         @Query("region") region: String = "US",
+        @Query("include_adult") includeAdult: Boolean = false,
         @Query("year") year: String? = null,
         @Query("page") page: Int = 1
     ): TmdbResponse
