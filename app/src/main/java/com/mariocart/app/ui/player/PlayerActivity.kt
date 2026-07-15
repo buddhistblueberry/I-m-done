@@ -43,6 +43,7 @@ import com.mariocart.app.data.server.ServerConfig
 import com.mariocart.app.data.server.ServerManager
 import com.mariocart.app.data.server.StreamExtractor
 import com.mariocart.app.data.server.StreamProviders
+import com.mariocart.app.data.server.VidSrcExtractor
 import com.mariocart.app.data.server.VidStormExtractor
 import com.mariocart.app.ui.theme.MarioCartTheme
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,17 +65,26 @@ import kotlinx.coroutines.flow.asStateFlow
  *      LookMovie is Cloudflare-blocked and embed players don't always
  *      auto-request their media inside the extraction timeout, whereas the
  *      VidStorm API returns a real direct URL for almost everything.
- *   1. [LookMovieWebExtractor] (FALLBACK) — runs the exact Kodi-addon flow
+ *   1. [VidSrcExtractor] (FALLBACK after VidStorm) — when VidStorm is broken
+ *      for a title (Interstellar, The Green Mile, … get only a dead "Boron"
+ *      URL), this walks the VidSrc embed pipeline
+ *      (vidsrc.me → cloudorchestranova.com RCP/PRORCP → master_urls →
+ *      generate.php token) over plain OkHttp and resolves live `#EXTM3U`
+ *      manifests at 360p/720p/1080p. No WebView, no JS challenge. This is
+ *      the "hidden servers in the exoplayer" aggregator sites keep behind
+ *      their RCP indirection, and it consistently plays the titles VidStorm
+ *      cannot. Fixes the long-wait-then-black-screen bug.
+ *   2. [EmbedExtractor] (FALLBACK) — tries every embed provider
+ *      (VidLink, 2Embed, VidSrc, …) inside an off-screen WebView and
+ *      captures the direct `.m3u8`/`.mp4` URL the provider's JS player
+ *      requests at runtime.
+ *   3. [LookMovieWebExtractor] (FALLBACK) — runs the exact Kodi-addon flow
  *      (search -> play page -> storage object -> security API -> .m3u8)
  *      inside an off-screen WebView so the Cloudflare JS challenge is solved
  *      automatically and the `cf_clearance` cookie is carried into the
  *      security-API `fetch()`. This mirrors the way the LookMovie Kodi addon
  *      works.
- *   2. [EmbedExtractor] (FALLBACK) — tries every embed provider
- *      (VidLink, 2Embed, VidSrc, …) inside another off-screen WebView and
- *      captures the direct `.m3u8`/`.mp4` URL the provider's JS player
- *      requests at runtime.
- *   3. [StreamExtractor] (LAST RESORT) — the original OkHttp-based LookMovie
+ *   4. [StreamExtractor] (LAST RESORT) — the original OkHttp-based LookMovie
  *      extractor. Kept as a final fallback; it returns a direct HLS URL when
  *      LookMovie is reachable without a Cloudflare challenge.
  *
@@ -101,9 +111,10 @@ class PlayerActivity : ComponentActivity() {
         // the embed stage) and to resume from the right point when ExoPlayer
         // reports a playback error on an already-resolved URL.
         const val STAGE_VIDSTORM = 0
-        const val STAGE_EMBED = 1
-        const val STAGE_LOOKMOVIE = 2
-        const val STAGE_OKHTTP = 3
+        const val STAGE_VIDSRC = 1
+        const val STAGE_EMBED = 2
+        const val STAGE_LOOKMOVIE = 3
+        const val STAGE_OKHTTP = 4
 
         /**
          * Factory used by [com.mariocart.app.ui.MainActivity].
@@ -234,12 +245,17 @@ class PlayerActivity : ComponentActivity() {
  *  0. [VidStormExtractor] — direct VidStorm API call (the FilmCave "cloud
  *     servers" backend). Resolves a direct .m3u8/.mp4 URL for a TMDB id
  *     with no WebView and no Cloudflare challenge. PRIMARY stage.
- *  1. [LookMovieWebExtractor] — the Kodi-addon flow inside a WebView
- *     (search -> play page -> storage object -> security API -> .m3u8).
- *     Bypasses Cloudflare because the WebView executes the JS challenge.
+ *  1. [VidSrcExtractor] — VidSrc RCP pipeline (vidsrc.me →
+ *     cloudorchestranova.com) over OkHttp. Resolves live #EXTM3U manifests
+ *     for the titles VidStorm cannot (Interstellar, The Green Mile, …).
+ *     No WebView, no JS challenge. Falls back here when VidStorm returns
+ *     only dead/null sources.
  *  2. [EmbedExtractor] — off-screen WebView over every embed provider,
  *     capturing a direct media URL.
- *  3. [StreamExtractor] — OkHttp LookMovie fallback (last resort).
+ *  3. [LookMovieWebExtractor] — the Kodi-addon flow inside a WebView
+ *     (search -> play page -> storage object -> security API -> .m3u8).
+ *     Bypasses Cloudflare because the WebView executes the JS challenge.
+ *  4. [StreamExtractor] — OkHttp LookMovie fallback (last resort).
  *
  * A human-verification challenge from ANY stage is surfaced to the user via
  * [VerificationActivity]; cookies are injected and extraction is retried.
@@ -275,15 +291,15 @@ fun PlayerScreen(
     var attempt by remember { mutableStateOf(0) }
     // Which stage extraction should START from on this attempt.
     //  - STAGE_VIDSTORM (0): full auto pipeline (default).
-    //  - STAGE_EMBED   (1): user picked a specific server — skip VidStorm /
-    //    LookMovie and go straight to the embed stage so ServerManager's
+    //  - STAGE_EMBED   (2): user picked a specific server — skip VidStorm /
+    //    VidSrc and go straight to the embed stage so ServerManager's
     //    ordered list (with their pick first) is honoured. This is the fix
     //    for "if I interrupt the stream auto finder to choose my own it
     //    stops working": previously the select just bumped `attempt`, which
     //    re-ran the whole pipeline from VidStorm and ignored the pick.
-    //    NOTE: embed is now stage 1 (before LookMovie) so when VidStorm
-    //    fails the parallel embed racing stage runs first, giving faster
-    //    and more reliable fallback to working providers.
+    //    NOTE: embed is now stage 2 (after VidStorm/VidSrc, before LookMovie)
+    //    so when VidStorm/VidSrc fail the parallel embed racing stage runs
+    //    next, giving faster and more reliable fallback to working providers.
     var startStage by remember { mutableStateOf(0) }
     // Tracks the stage that actually delivered the current streamUrl so that
     // an ExoPlayer playback error can resume extraction from the NEXT stage
@@ -381,7 +397,51 @@ fun PlayerScreen(
         }
         }
 
-        // ── Stage 1: off-screen WebView embed extraction (PARALLEL — races multiple providers) (FALLBACK) ── //
+        // ── Stage 1: VidSrc direct HLS extraction (FALLBACK after VidStorm) ── //
+        // VidStorm is broken for a large set of popular titles (Interstellar,
+        // The Green Mile, …): it returns only a dead "Boron" CDN URL and
+        // nulls for every other named source. The VidSrc pipeline
+        // (vidsrc.me → cloudorchestranova.com RCP/PRORCP) consistently
+        // resolves those same titles to live #EXTM3U manifests at
+        // 360p/720p/1080p over plain OkHttp — no WebView, no JS challenge.
+        // This is the "hidden servers in the exoplayer" that aggregator
+        // sites keep behind their RCP indirection. It runs fast (a few
+        // round-trips) so we try it before the slow 18 s embed WebView stage.
+        if (start <= PlayerActivity.STAGE_VIDSRC) {
+            currentStage = PlayerActivity.STAGE_VIDSRC
+            infoMessage = "Finding best stream…"
+            run {
+                val vsResult = try {
+                    VidSrcExtractor.extract(
+                        tmdbId = tmdbId,
+                        contentType = contentType,
+                        season = season,
+                        episode = episode
+                    )
+                } catch (e: Exception) {
+                    Log.e("Player", "💥 VidSrc extraction failed", e)
+                    VidSrcExtractor.Result.Error(e.message ?: "VidSrc extraction failed")
+                }
+
+                when (vsResult) {
+                    is VidSrcExtractor.Result.Stream -> {
+                        Log.i("Player", "✅ VidSrc stream (${vsResult.providerName}): ${vsResult.url}")
+                        streamUrl = vsResult.url
+                        streamHeaders = vsResult.headers.ifEmpty {
+                            mapOf("User-Agent" to DEFAULT_UA)
+                        }
+                        deliveringServerName = vsResult.providerName.ifBlank { "VidSrc" }
+                        isLoading = false
+                        return@LaunchedEffect
+                    }
+                    is VidSrcExtractor.Result.Error -> {
+                        Log.w("Player", "VidSrc yielded nothing (${vsResult.message}); falling back to embed pipeline.")
+                    }
+                }
+            }
+        }
+
+        // ── Stage 2: off-screen WebView embed extraction (PARALLEL — races multiple providers) (FALLBACK) ── //
         // This is the stage that actually honours the user's server choice:
         // EmbedExtractor calls ServerManager.getOrderedServers() which puts
         // the user-selected server first. So when start == STAGE_EMBED we
@@ -432,7 +492,7 @@ fun PlayerScreen(
             }
         }
 
-        // ── Stage 2: LookMovie via WebView (FALLBACK — mirrors Kodi addon) ── //
+        // ── Stage 3: LookMovie via WebView (FALLBACK — mirrors Kodi addon) ── //
         if (start <= PlayerActivity.STAGE_LOOKMOVIE && activity != null) {
             if (start < PlayerActivity.STAGE_LOOKMOVIE) infoMessage = "Trying alternative sources…"
             currentStage = PlayerActivity.STAGE_LOOKMOVIE
@@ -477,7 +537,7 @@ fun PlayerScreen(
             }
         }
 
-        // ── Stage 3: OkHttp LookMovie extractor (LAST RESORT) ── //
+        // ── Stage 4: OkHttp LookMovie extractor (LAST RESORT) ── //
         if (start <= PlayerActivity.STAGE_OKHTTP) {
             infoMessage = "Trying last-resort source…"
             currentStage = PlayerActivity.STAGE_OKHTTP
