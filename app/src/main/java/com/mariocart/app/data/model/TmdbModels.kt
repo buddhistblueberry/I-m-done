@@ -22,6 +22,13 @@ data class TmdbItem(
     @SerializedName("original_language") val originalLanguage: String? = null,
     @SerializedName("media_type") val mediaType: String? = null,
     @SerializedName("genre_ids") val genreIds: List<Int> = emptyList(),
+    /**
+     * TMDB's "adult" flag — true for pornographic / adult-only titles.
+     * The API is asked for include_adult=false so this should always be
+     * false/absent, but we parse it so [ContentRepository] can filter any
+     * that slip through as a second layer of defense.
+     */
+    val adult: Boolean? = null,
     val runtime: Int? = null             // movie runtime in minutes (unused by UI)
 ) {
     val displayTitle: String get() = title ?: name ?: "Unknown"
@@ -51,6 +58,14 @@ data class TmdbItem(
 
     val isValidMovie: Boolean
         get() = isMovie // All videos identified as movies are valid
+
+    /**
+     * Whether this title is flagged as adult/pornographic by TMDB.
+     * Used by [com.mariocart.app.data.repository.ContentRepository] to
+     * guarantee no adult content ever surfaces in browse/search/home.
+     */
+    val isAdult: Boolean
+        get() = adult == true
 
     /**
      * Whether the title has actually been released yet, based on its

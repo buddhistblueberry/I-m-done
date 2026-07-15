@@ -176,9 +176,17 @@ object RemoteServerListFetcher {
                 ServerConfig("vidlink", "VidLink", "https://vidlink.pro",
                     "{base}/movie/{id}", "{base}/tv/{id}/{season}/{episode}", 1, 95),
                 ServerConfig("2embed_cc", "2Embed.cc", "https://www.2embed.cc",
-                    "{base}/embed/{id}", "{base}/embed/tv/{id}/{season}/{episode}", 1, 88),
+                    "{base}/embed/{id}", "{base}/embedtv/{id}&s={season}&e={episode}", 1, 88),
+                ServerConfig("videasy_net", "Videasy.net", "https://player.videasy.net",
+                    "{base}/movie/{id}", "{base}/tv/{id}/{season}/{episode}", 1, 80),
                 ServerConfig("vidsrc_me", "VidSrc.me", "https://vidsrc.me",
-                    "{base}/embed/movie/{id}", "{base}/embed/tv/{id}/{season}/{episode}", 2, 78)
+                    "{base}/embed/movie/{id}", "{base}/embed/tv/{id}/{season}/{episode}", 2, 78),
+                ServerConfig("multiembed", "MultiEmbed", "https://multiembed.mov",
+                    "{base}/?video_id={id}&tmdb=1", "{base}/?video_id={id}&tmdb=1&s={season}&e={episode}", 2, 71),
+                ServerConfig("vidsrc_cc", "VidSrc.cc", "https://vidsrc.cc",
+                    "{base}/v2/embed/movie/{id}", "{base}/v2/embed/tv/{id}/{season}/{episode}", 2, 74),
+                ServerConfig("vidsrc_to", "VidSrc.to", "https://vidsrc.to",
+                    "{base}/embed/movie/{id}", "{base}/embed/tv/{id}/{season}/{episode}", 2, 73)
             )
         }
     }
