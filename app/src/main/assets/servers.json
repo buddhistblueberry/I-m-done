@@ -1,8 +1,52 @@
 {
-  "version": 4,
-  "updated": "2026-07-15",
-  "description": "Auto-updated list of working TMDB-based stream providers for I-m Done. Fetched by the app at runtime from this file's raw GitHub URL. Edit this file and push to update every install. v4: added MultiEmbed, VidSrc.cc, VidSrc.to, Videasy.net; fixed 2Embed TV templates (embedtv path resolves correct show).",
+  "version": 5,
+  "updated": "2026-07-16",
+  "description": "Auto-updated list of working TMDB-based stream providers for I-m Done. Fetched by the app at runtime from this file's raw GitHub URL. Edit this file and push to update every install. v5: added servers discovered from fmcave.lovable.app + the wider TMDB-embed ecosystem — VidFast (FilmCave), VidSpark, VidCore, AutoEmbed (the VidStorm/FilmCave player itself, as an iframe fallback). All new providers verified to resolve (movie 27205 / tv 1399 s1e1). v4: added MultiEmbed, VidSrc.cc, VidSrc.to, Videasy.net; fixed 2Embed TV templates (embedtv path resolves correct show).",
   "servers": [
+    {
+      "id": "vidspark",
+      "name": "VidSpark",
+      "baseUrl": "https://vidspark.to",
+      "movieUrlTemplate": "{base}/movie/{id}",
+      "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
+      "tier": 1,
+      "reliability": 92,
+      "cloudflare": false,
+      "enabled": true
+    },
+    {
+      "id": "vidcore",
+      "name": "VidCore",
+      "baseUrl": "https://www.vidcore.org",
+      "movieUrlTemplate": "{base}/embed/movie/{id}",
+      "tvUrlTemplate": "{base}/embed/tv/{id}/{season}/{episode}",
+      "tier": 1,
+      "reliability": 90,
+      "cloudflare": false,
+      "enabled": true
+    },
+    {
+      "id": "autoembed",
+      "name": "AutoEmbed",
+      "baseUrl": "https://autoembed.pro",
+      "movieUrlTemplate": "{base}/movie/{id}",
+      "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
+      "tier": 1,
+      "reliability": 94,
+      "cloudflare": false,
+      "enabled": true
+    },
+    {
+      "id": "vidfast",
+      "name": "VidFast",
+      "baseUrl": "https://vidfast.pro",
+      "movieUrlTemplate": "{base}/movie/{id}",
+      "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
+      "tier": 2,
+      "reliability": 84,
+      "cloudflare": true,
+      "enabled": true
+    },
     {
       "id": "vidlink",
       "name": "VidLink",
