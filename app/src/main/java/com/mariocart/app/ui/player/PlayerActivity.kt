@@ -43,8 +43,10 @@ import com.mariocart.app.data.server.ServerConfig
 import com.mariocart.app.data.server.ServerManager
 import com.mariocart.app.data.server.StreamExtractor
 import com.mariocart.app.data.server.StreamProviders
+import com.mariocart.app.data.server.VidLinkExtractor
 import com.mariocart.app.data.server.VidSrcExtractor
 import com.mariocart.app.data.server.VidStormExtractor
+import com.mariocart.app.data.server.VixSrcExtractor
 import com.mariocart.app.ui.theme.MarioCartTheme
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -77,6 +79,14 @@ import kotlinx.coroutines.selects.select
  *      the "hidden servers in the exoplayer" aggregator sites keep behind
  *      their RCP indirection, and it consistently plays the titles VidStorm
  *      cannot. Fixes the long-wait-then-black-screen bug.
+ *
+ *      Stages 0 + 1 are raced in **parallel** with two additional direct-API
+ *      extractors so the first one to return a verified Stream wins:
+ *        - [VidLinkExtractor] — encrypts the TMDB id via enc-dec.app, then
+ *          fetches a direct `.m3u8` playlist from the vidlink.pro JSON API.
+ *        - [VixSrcExtractor] — calls the vixsrc.to API, fetches the embed
+ *          HTML, extracts the token/expires/playlist, and builds a direct
+ *          master HLS URL. No WebView, no JS challenge.
  *   2. [EmbedExtractor] (FALLBACK) — tries every embed provider
  *      (VidLink, 2Embed, VidSrc, …) inside an off-screen WebView and
  *      captures the direct `.m3u8`/`.mp4` URL the provider's JS player
@@ -398,8 +408,8 @@ fun PlayerScreen(
             currentStage = PlayerActivity.STAGE_VIDSTORM
             infoMessage = "Finding best stream…"
 
-            // Race the two direct extractors. The first to return a verified
-            // Stream wins; the loser is cancelled. Both run concurrently on IO.
+            // Race the four direct extractors. The first to return a verified
+            // Stream wins; the losers are cancelled. All run concurrently on IO.
             val winner: Any? = try {
                 coroutineScope {
                     val vidStorm = async {
@@ -418,46 +428,91 @@ fun PlayerScreen(
                             VidSrcExtractor.Result.Error(e.message ?: "VidSrc extraction failed")
                         }
                     }
+                    val vidLink = async {
+                        try {
+                            VidLinkExtractor.extract(tmdbId, contentType, season, episode)
+                        } catch (e: Exception) {
+                            Log.e("Player", "💥 VidLink extraction failed", e)
+                            VidLinkExtractor.Result.Error(e.message ?: "VidLink extraction failed")
+                        }
+                    }
+                    val vixSrc = async {
+                        try {
+                            VixSrcExtractor.extract(tmdbId, contentType, season, episode)
+                        } catch (e: Exception) {
+                            Log.e("Player", "💥 VixSrc extraction failed", e)
+                            VixSrcExtractor.Result.Error(e.message ?: "VixSrc extraction failed")
+                        }
+                    }
                     // select{} suspends until the FIRST async completes; we
                     // then inspect its result. We keep polling as long as a
-                    // completed branch is an Error (so a real Stream from the
-                    // other branch can still win), and stop on the first
-                    // Stream or when both have completed.
+                    // completed branch is an Error (so a real Stream from
+                    // another branch can still win), and stop on the first
+                    // Stream or when all four have completed.
                     var stormResult: VidStormExtractor.Result? = null
                     var srcResult: VidSrcExtractor.Result? = null
+                    var linkResult: VidLinkExtractor.Result? = null
+                    var vixResult: VixSrcExtractor.Result? = null
                     var raceWinner: Any? = null
-                    while (raceWinner == null && (stormResult == null || srcResult == null)) {
+                    while (raceWinner == null &&
+                        (stormResult == null || srcResult == null ||
+                            linkResult == null || vixResult == null)
+                    ) {
                         raceWinner = select<Any?> {
                             if (stormResult == null) {
                                 vidStorm.onAwait { r ->
                                     stormResult = r
                                     if (r is VidStormExtractor.Result.Stream) r
-                                    else if (srcResult is VidSrcExtractor.Result.Stream) srcResult
-                                    else null // wait for the other (or fall through below)
+                                    else linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
+                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
+                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
                                 }
                             }
                             if (srcResult == null) {
                                 vidSrc.onAwait { r ->
                                     srcResult = r
                                     if (r is VidSrcExtractor.Result.Stream) r
-                                    else if (stormResult is VidStormExtractor.Result.Stream) stormResult
-                                    else null // wait for the other (or fall through below)
+                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
+                                        ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
+                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
+                                }
+                            }
+                            if (linkResult == null) {
+                                vidLink.onAwait { r ->
+                                    linkResult = r
+                                    if (r is VidLinkExtractor.Result.Stream) r
+                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
+                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
+                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
+                                }
+                            }
+                            if (vixResult == null) {
+                                vixSrc.onAwait { r ->
+                                    vixResult = r
+                                    if (r is VixSrcExtractor.Result.Stream) r
+                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
+                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
+                                        ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
                                 }
                             }
                         }
                     }
-                    // If neither produced a Stream, normalise to the last
-                    // error so the caller can fall through. This expression
-                    // is the coroutineScope return value -> assigned to the
-                    // outer `winner`.
+                    // If none produced a Stream, normalise to the last error
+                    // so the caller can fall through. This expression is the
+                    // coroutineScope return value -> assigned to the outer
+                    // `winner`.
                     raceWinner ?: run {
                         val se = (stormResult as? VidStormExtractor.Result.Error)?.message
                         val xe = (srcResult as? VidSrcExtractor.Result.Error)?.message
-                        VidStormExtractor.Result.Error(se ?: xe ?: "VidStorm & VidSrc yielded nothing")
+                        val le = (linkResult as? VidLinkExtractor.Result.Error)?.message
+                        val ve = (vixResult as? VixSrcExtractor.Result.Error)?.message
+                        VidStormExtractor.Result.Error(
+                            se ?: xe ?: le ?: ve ?: "All primary extractors yielded nothing"
+                        )
                     }
                 }
             } catch (e: Exception) {
-                Log.e("Player", "💥 Parallel VidStorm/VidSrc race failed", e)
+                Log.e("Player", "💥 Parallel direct-extractor race failed", e)
                 VidStormExtractor.Result.Error(e.message ?: "extraction race failed")
             }
 
@@ -483,8 +538,28 @@ fun PlayerScreen(
                     isLoading = false
                     return@LaunchedEffect
                 }
+                is VidLinkExtractor.Result.Stream -> {
+                    Log.i("Player", "✅ VidLink stream (${winner.providerName}): ${winner.url}")
+                    streamUrl = winner.url
+                    streamHeaders = winner.headers.ifEmpty {
+                        mapOf("User-Agent" to DEFAULT_UA)
+                    }
+                    deliveringServerName = winner.providerName.ifBlank { "VidLink" }
+                    isLoading = false
+                    return@LaunchedEffect
+                }
+                is VixSrcExtractor.Result.Stream -> {
+                    Log.i("Player", "✅ VixSrc stream (${winner.providerName}): ${winner.url}")
+                    streamUrl = winner.url
+                    streamHeaders = winner.headers.ifEmpty {
+                        mapOf("User-Agent" to DEFAULT_UA)
+                    }
+                    deliveringServerName = winner.providerName.ifBlank { "VixSrc" }
+                    isLoading = false
+                    return@LaunchedEffect
+                }
                 is VidStormExtractor.Result.Error -> {
-                    Log.w("Player", "VidStorm+VidSrc both yielded nothing (${winner.message}); falling back to embed pipeline.")
+                    Log.w("Player", "All primary extractors yielded nothing (${winner.message}); falling back to embed pipeline.")
                 }
             }
         }
