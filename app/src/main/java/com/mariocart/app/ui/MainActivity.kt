@@ -4,7 +4,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -40,6 +43,7 @@ import com.mariocart.app.ui.theme.TextPrimary
 import com.mariocart.app.ui.tv.SeasonEpisodePicker
 import com.mariocart.app.ui.tv.TvScreen
 import com.mariocart.app.ui.updates.UpdatesScreen
+import com.mariocart.app.ui.util.responsiveDims
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     Home("Home", Icons.Default.Home),
@@ -75,6 +79,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppRoot() {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val dims = responsiveDims()
     var currentTab by remember { mutableStateOf(Tab.Home) }
     var showSearch by remember { mutableStateOf(false) }
     var selectedTv by remember { mutableStateOf<TmdbItem?>(null) }
@@ -85,7 +90,7 @@ private fun AppRoot() {
     androidx.compose.runtime.LaunchedEffect(Unit) {
         com.mariocart.app.ui.AutoUpdater.checkAndPrompt(context)
     }
-    // ── Navigation helpers ──────────────────────────────────────────── //
+    // ── Navigation helpers ────────────────────────────────────────── //
     fun launchMovie(item: TmdbItem) {
         val intent = PlayerActivity.newIntent(
             context = context,
@@ -123,7 +128,7 @@ private fun AppRoot() {
         }
     }
 
-    // ── Search overlay takes priority ───────────────────────────────── //
+    // ── Search overlay takes priority ─────────────────────────────── //
     if (showSearch) {
         SearchScreen(
             onItemClick = onItemClick,
@@ -136,7 +141,7 @@ private fun AppRoot() {
         return
     }
 
-    // ── Season / episode picker overlay for TV shows ────────────────── //
+    // ── Season / episode picker overlay for TV shows ──────────────── //
     selectedTv?.let { tv ->
         SeasonEpisodePicker(
             item = tv,
@@ -146,42 +151,69 @@ private fun AppRoot() {
         return
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
+    // ── Layout: TV uses a side navigation rail; phones use bottom nav ──
+    if (dims.isTv) {
+        Row(modifier = Modifier.fillMaxSize().background(Bg)) {
+            TvSideNav(
                 currentTab = currentTab,
-                onSearchClick = { showSearch = true }
+                onTabSelected = { currentTab = it },
+                onSearchClick = { showSearch = true },
+                dims = dims
             )
-        },
-        bottomBar = {
-            BottomNav(
-                currentTab = currentTab,
-                onTabSelected = { currentTab = it }
-            )
-        },
-        containerColor = Bg
-    ) { padding ->
-        Box(modifier = Modifier.padding(padding)) {
-            when (currentTab) {
-                Tab.Home -> HomeScreen(
-                    onItemClick = onItemClick,
-                    onSearchWithGenre = { genreId ->
-                        searchGenre = genreId
-                        showSearch = true
-                    }
+            Box(modifier = Modifier.weight(1f)) {
+                when (currentTab) {
+                    Tab.Home -> HomeScreen(
+                        onItemClick = onItemClick,
+                        onSearchWithGenre = { genreId ->
+                            searchGenre = genreId
+                            showSearch = true
+                        }
+                    )
+                    Tab.Movies -> MoviesScreen(onItemClick = onItemClick)
+                    Tab.TV -> TvScreen(onItemClick = onItemClick)
+                    Tab.Browse -> BrowseScreen(onItemClick = onItemClick)
+                    Tab.Updates -> UpdatesScreen()
+                }
+            }
+        }
+    } else {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    currentTab = currentTab,
+                    onSearchClick = { showSearch = true }
                 )
-                Tab.Movies -> MoviesScreen(onItemClick = onItemClick)
-                Tab.TV -> TvScreen(onItemClick = onItemClick)
-                Tab.Browse -> BrowseScreen(onItemClick = onItemClick)
-                Tab.Updates -> UpdatesScreen()
+            },
+            bottomBar = {
+                BottomNav(
+                    currentTab = currentTab,
+                    onTabSelected = { currentTab = it }
+                )
+            },
+            containerColor = Bg
+        ) { padding ->
+            Box(modifier = Modifier.padding(padding)) {
+                when (currentTab) {
+                    Tab.Home -> HomeScreen(
+                        onItemClick = onItemClick,
+                        onSearchWithGenre = { genreId ->
+                            searchGenre = genreId
+                            showSearch = true
+                        }
+                    )
+                    Tab.Movies -> MoviesScreen(onItemClick = onItemClick)
+                    Tab.TV -> TvScreen(onItemClick = onItemClick)
+                    Tab.Browse -> BrowseScreen(onItemClick = onItemClick)
+                    Tab.Updates -> UpdatesScreen()
+                }
             }
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────── //
-//  Top app bar with the app title + search icon                            //
-// ─────────────────────────────────────────────────────────────────────── //
+// ─────────────────────────────────────────────────────────────────── //
+//  Top app bar (phone) — title + search icon                         //
+// ─────────────────────────────────────────────────────────────────── //
 @Composable
 private fun TopAppBar(currentTab: Tab, onSearchClick: () -> Unit) {
     Surface(color = Bg2, shadowElevation = 0.dp) {
@@ -210,9 +242,9 @@ private fun TopAppBar(currentTab: Tab, onSearchClick: () -> Unit) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────── //
-//  Bottom navigation bar                                                   //
-// ─────────────────────────────────────────────────────────────────────── //
+// ─────────────────────────────────────────────────────────────────── //
+//  Bottom navigation bar (phone)                                     //
+// ─────────────────────────────────────────────────────────────────── //
 @Composable
 private fun BottomNav(currentTab: Tab, onTabSelected: (Tab) -> Unit) {
     Surface(color = Bg2, shadowElevation = 8.dp) {
@@ -247,5 +279,107 @@ private fun NavItem(tab: Tab, isSelected: Boolean, onClick: () -> Unit) {
         Icon(tab.icon, contentDescription = tab.label, tint = color, modifier = Modifier.size(24.dp))
         Spacer(Modifier.height(2.dp))
         Text(tab.label, color = color, fontSize = 11.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────── //
+//  TV side navigation rail (Android TV)                              //
+//  A vertical icon+label rail on the left edge, D-pad focusable with  //
+//  a red highlight on the focused item. The search icon sits at top.  //
+// ─────────────────────────────────────────────────────────────────── //
+@Composable
+private fun TvSideNav(
+    currentTab: Tab,
+    onTabSelected: (Tab) -> Unit,
+    onSearchClick: () -> Unit,
+    dims: com.mariocart.app.ui.util.ResponsiveDims
+) {
+    Surface(
+        color = Bg2,
+        shadowElevation = 0.dp,
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(120.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // App title
+            Text(
+                text = "Mario\nCart",
+                color = Red,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Black,
+                lineHeight = 18.sp,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            // Search button
+            TvNavItem(
+                icon = Icons.Default.Search,
+                label = "Search",
+                isSelected = false,
+                onClick = onSearchClick
+            )
+            Tab.entries.forEach { tab ->
+                TvNavItem(
+                    icon = tab.icon,
+                    label = tab.label,
+                    isSelected = tab == currentTab,
+                    onClick = { onTabSelected(tab) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvNavItem(
+    icon: ImageVector,
+    label: String,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+    val color = if (isSelected) Red else TextPrimary
+    val highlight = isFocused || isSelected
+
+    Column(
+        modifier = Modifier
+            .width(100.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (highlight) Red.copy(alpha = 0.15f) else Color.Transparent)
+            .then(
+                if (isFocused) {
+                    Modifier.border(2.dp, Red, RoundedCornerShape(10.dp))
+                } else {
+                    Modifier
+                }
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
+            .padding(vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = color,
+            modifier = Modifier.size(28.dp)
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            label,
+            color = color,
+            fontSize = 12.sp,
+            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+        )
     }
 }

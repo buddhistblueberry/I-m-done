@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -19,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.ui.theme.Red
 import com.mariocart.app.ui.theme.TextPrimary
+import com.mariocart.app.ui.util.responsiveDims
 
 @Composable
 fun ContentRow(
@@ -29,30 +29,31 @@ fun ContentRow(
     onLoadMore: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val dims = responsiveDims()
     Column(modifier = modifier.padding(bottom = 24.dp)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = dims.rowPadding, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = "$emoji $title",
                 color = TextPrimary,
-                fontSize = 18.sp,
+                fontSize = if (dims.isTv) 22.sp else 18.sp,
                 fontWeight = FontWeight.Bold
             )
             if (onLoadMore != null) {
                 TextButton(onClick = onLoadMore) {
-                    Text("More", color = Red, fontSize = 13.sp)
+                    Text("More", color = Red, fontSize = if (dims.isTv) 15.sp else 13.sp)
                 }
             }
         }
 
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            contentPadding = PaddingValues(horizontal = dims.rowPadding),
+            horizontalArrangement = Arrangement.spacedBy(dims.cardSpacing)
         ) {
             items(
                 count = items.size,
@@ -68,7 +69,8 @@ fun ContentRow(
                 val item = items[idx]
                 ContentCard(
                     item = item,
-                    onClick = { onItemClick(item) }
+                    onClick = { onItemClick(item) },
+                    dims = dims
                 )
             }
         }

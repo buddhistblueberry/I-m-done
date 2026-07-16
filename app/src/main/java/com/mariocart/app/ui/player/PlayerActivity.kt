@@ -1091,11 +1091,42 @@ private fun ExoPlayerView(
     // server. This is the fix for "shows try to play then switch servers every
     // time": previously any PlaybackException immediately switched servers.
     var transientRetryCount by remember { mutableStateOf(0) }
-    val mediaItemHolder = remember { mutableStateOf<MediaItem?>(null) }
 
     // Capture the error callback in a lambda we can invoke from the
     // AndroidView factory (which runs outside of the Composition).
     val errorHandler = rememberUpdatedState(onPlayerError)
+
+    // ── Reset ready + retry state whenever the URL changes (server switch) ──
+    // When the player falls through to the next server, a NEW url arrives.
+    // The old player has been released (onRelease), so we must clear the
+    // "first frame rendered" flag and the retry counter so the new source
+    // starts with a clean slate. Without this, isReady could stay true from
+    // a previous (broken) source and the poster would never show, and the
+    // retry counter could carry over and prematurely exhaust retries on the
+    // new source.
+    LaunchedEffect(url) {
+        isReady = false
+        transientRetryCount = 0
+        availableQualities = emptyList()
+        selectedQuality = "Auto"
+    }
+
+    // Build the MediaItem fresh from the current URL every time. Previously
+    // a `mediaItemHolder` cached the FIRST media item and never updated when
+    // the URL changed (server switch) — so the new source's URL was silently
+    // ignored and the stale (broken) source kept "playing" with a known
+    // duration but no video, then errored and switched again.
+    val mediaItem = remember(url) {
+        val mimeType = guessMimeType(url)
+        if (mimeType != null) {
+            MediaItem.Builder()
+                .setUri(Uri.parse(url))
+                .setMimeType(mimeType)
+                .build()
+        } else {
+            MediaItem.fromUri(Uri.parse(url))
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
@@ -1118,6 +1149,15 @@ private fun ExoPlayerView(
             }
         }
 
+        // ── Key the AndroidView on the url so the player is FULLY recreated
+        // when the source changes (server switch). Without this key the
+        // AndroidView factory only runs ONCE for the composable's lifetime,
+        // so when a new url arrived after a server switch the OLD player
+        // (with the broken/old url) stayed active — it reported the correct
+        // duration from the manifest but never rendered video, then errored
+        // out and switched again. Keying on url guarantees a fresh ExoPlayer +
+        // PlayerView + surface for every source. ──
+        androidx.compose.runtime.key(url) {
         AndroidView(
             factory = { ctx ->
                 val userAgent = headers["User-Agent"] ?: DEFAULT_UA
@@ -1165,27 +1205,11 @@ private fun ExoPlayerView(
                     .setBackBuffer(30_000, true)     // keep 30 s behind for seeks
                     .build()
 
-                val mediaItem = mediaItemHolder.value ?: run {
-                    // Detect the stream type so ExoPlayer gets the right MIME type.
-                    // This is the fix for the 00:00 duration bug: when a provider
-                    // serves a progressive MP4 from a CDN path that does NOT end in
-                    // ".mp4" (e.g. .../video/720p/abc123?token=xyz), ExoPlayer's
-                    // content-type sniffing fails and it can't determine the
-                    // container format, so it reports a 0 duration and can't seek.
-                    // By setting the MIME type explicitly we tell ExoPlayer exactly
-                    // how to parse the stream.
-                    val mimeType = guessMimeType(url)
-                    if (mimeType != null) {
-                        MediaItem.Builder()
-                            .setUri(Uri.parse(url))
-                            .setMimeType(mimeType)
-                            .build()
-                    } else {
-                        MediaItem.fromUri(Uri.parse(url))
-                    }
-                }
-                mediaItemHolder.value = mediaItem
-
+                // mediaItem is built from the current url via a remember(url)
+                // block above the Box — it updates whenever the url changes
+                // (server switch), so the player always loads the correct
+                // source. Previously a stale mediaItemHolder cached the first
+                // media item and the new URL was silently ignored.
                 val exoPlayer = ExoPlayer.Builder(ctx)
                     .setTrackSelector(selector)
                     .setLoadControl(loadControl)
@@ -1270,12 +1294,27 @@ private fun ExoPlayerView(
                     this.player = exoPlayer
                     useController = true
                     controllerShowTimeoutMs = 3000
+                    // ── Surface / rendering configuration ──
+                    // Ensure the video surface is always attached and visible.
+                    // The surface type is a TextureView by default in media3,
+                    // which handles resolution changes and DRM content better
+                    // than SurfaceView. resizeMode=FIT keeps the correct aspect
+                    // ratio so the video is never stretched/cropped.
+                    resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    // Keep the surface visible even before the first frame —
+                    // the poster overlay (outside the AndroidView) covers it
+                    // until isReady flips true.
+                    setShutterBackgroundColor(android.graphics.Color.BLACK)
                 }
             },
             update = {},
-            onRelease = { player?.release() },
+            onRelease = {
+                player?.release()
+                player = null
+            },
             modifier = Modifier.fillMaxSize()
         )
+        } // end key(url)
 
         // ── Quality picker overlay (drawn on top of the player) ──
         if (availableQualities.isNotEmpty()) {
@@ -1349,7 +1388,11 @@ private fun ExoPlayerView(
 private fun guessMimeType(url: String): String? {
     val u = url.lowercase()
 
-    // HLS (.m3u8 or HLS path patterns).
+    // HLS (.m3u8 or HLS path patterns) — checked FIRST so that HLS
+    // manifests served from paths containing "/video/" etc. are not
+    // misidentified as progressive MP4 (which causes "duration known but
+    // no video renders" because ExoPlayer tries to parse the m3u8 text
+    // as an MP4 moov atom).
     if (u.contains(".m3u8")) return MimeTypes.APPLICATION_M3U8
     if (u.contains("/hls/")) return MimeTypes.APPLICATION_M3U8
     if (u.contains("/master")) return MimeTypes.APPLICATION_M3U8
@@ -1362,6 +1405,9 @@ private fun guessMimeType(url: String): String? {
     if (u.contains("/stream/") && u.contains("m3u8")) return MimeTypes.APPLICATION_M3U8
     // VidLink / common provider HLS: query param ?hls or /playlist without ext.
     if (u.contains("?hls") || u.contains("&hls")) return MimeTypes.APPLICATION_M3U8
+    // Query-param format hints: ?format=hls, ?type=m3u8, etc.
+    if (u.contains("format=hls") || u.contains("type=m3u8") ||
+        u.contains("format=m3u8") || u.contains("type=hls")) return MimeTypes.APPLICATION_M3U8
 
     // DASH (.mpd or manifest patterns).
     if (u.contains(".mpd")) return MimeTypes.APPLICATION_MPD

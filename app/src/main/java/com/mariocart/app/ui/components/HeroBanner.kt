@@ -35,6 +35,7 @@ import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.ui.theme.Bg
 import com.mariocart.app.ui.theme.Gold
 import com.mariocart.app.ui.theme.TextMuted
+import com.mariocart.app.ui.util.responsiveDims
 import kotlinx.coroutines.delay
 
 @Composable
@@ -45,6 +46,7 @@ fun HeroBanner(
 ) {
     if (items.isEmpty()) return
 
+    val dims = responsiveDims()
     var currentIndex by remember { mutableIntStateOf(0) }
     val currentItem = items[currentIndex]
 
@@ -58,7 +60,7 @@ fun HeroBanner(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(420.dp)
+            .height(dims.heroHeight)
     ) {
         // Background image
         AsyncImage(
@@ -97,14 +99,14 @@ fun HeroBanner(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 16.dp, bottom = 32.dp, end = 100.dp)
+                .padding(start = dims.rowPadding, bottom = 32.dp, end = 100.dp)
         ) {
             Text(
                 text = currentItem.displayTitle,
                 color = Color.White,
-                fontSize = 28.sp,
+                fontSize = dims.heroTitleSize.sp,
                 fontWeight = FontWeight.Black,
-                lineHeight = 32.sp,
+                lineHeight = if (dims.isTv) 44.sp else 32.sp,
                 maxLines = 2
             )
 
