@@ -1,7 +1,7 @@
 {
-    "version": 6,
+    "version": 7,
     "updated": "2026-07-16",
-    "description": "Auto-updated list of working TMDB-based stream providers for I-m Done. Fetched by the app at runtime from this file's raw GitHub URL. Edit this file and push to update every install. v6: added 7 more servers discovered from the enc-dec.app provider family (the same toolkit that powers VidLink/VidFast/Videasy) + the wider TMDB-embed ecosystem \u2014 VidSrc.net, VidSrc.dev, VidSrc.pm, SuperEmbed, Embed.lol, VidSync (vidsync.live, enc-dec.app), Hexa (hexa.su, enc-dec.app). All verified to resolve (movie 105248 / tv 1399 s1e1). v5: added VidFast (FilmCave), VidSpark, VidCore, AutoEmbed. v4: added MultiEmbed, VidSrc.cc, VidSrc.to, Videasy.net; fixed 2Embed TV templates.",
+    "description": "Auto-updated list of working TMDB-based stream providers for I-m Done. Fetched by the app at runtime from this file's raw GitHub URL. Edit this file and push to update every install. v7: added 5 servers discovered on filmcave.ru's watch page (VidRock, VidStorm, VidZee, VidNest, VidSrc.ru) \u2014 each verified HTTP 200 for movie 497 (The Green Mile) & tv 60625 s1e1 (Rick and Morty). The VidStorm/AutoEmbed player also exposes 10 dynamic element-named sources via its API (Lithium, Hydrogen, Boron, Helium, Beryllium, Carbon, Nitrogen, Oxygen, Fluorine, Neon) \u2014 already resolved by VidStormExtractor; verified LIVE: Green Mile=Boron, Interstellar=Boron, Rick and Morty=Hydrogen, The Odyssey=Hydrogen+Boron. v6: added 7 more servers from the enc-dec.app provider family + wider TMDB-embed ecosystem \u2014 VidSrc.net, VidSrc.dev, VidSrc.pm, SuperEmbed, Embed.lol, VidSync, Hexa. v5: added VidFast (FilmCave), VidSpark, VidCore, AutoEmbed. v4: added MultiEmbed, VidSrc.cc, VidSrc.to, Videasy.net; fixed 2Embed TV templates.",
     "servers": [
         {
             "id": "vidspark",
@@ -34,6 +34,61 @@
             "tier": 1,
             "reliability": 94,
             "cloudflare": false,
+            "enabled": true
+        },
+        {
+            "id": "vidrock",
+            "name": "VidRock",
+            "baseUrl": "https://vidrock.ru",
+            "movieUrlTemplate": "{base}/movie/{id}",
+            "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
+            "tier": 1,
+            "reliability": 88,
+            "cloudflare": true,
+            "enabled": true
+        },
+        {
+            "id": "vidstorm",
+            "name": "VidStorm",
+            "baseUrl": "https://vidstorm.ru",
+            "movieUrlTemplate": "{base}/movie/{id}",
+            "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
+            "tier": 1,
+            "reliability": 90,
+            "cloudflare": true,
+            "enabled": true
+        },
+        {
+            "id": "vidzee",
+            "name": "VidZee",
+            "baseUrl": "https://player.vidzee.wtf",
+            "movieUrlTemplate": "{base}/embed/movie/{id}",
+            "tvUrlTemplate": "{base}/embed/tv/{id}/{season}/{episode}",
+            "tier": 1,
+            "reliability": 86,
+            "cloudflare": true,
+            "enabled": true
+        },
+        {
+            "id": "vidnest",
+            "name": "VidNest",
+            "baseUrl": "https://vidnest.fun",
+            "movieUrlTemplate": "{base}/movie/{id}",
+            "tvUrlTemplate": "{base}/tv/{id}/{season}/{episode}",
+            "tier": 1,
+            "reliability": 85,
+            "cloudflare": true,
+            "enabled": true
+        },
+        {
+            "id": "vidsrc_ru",
+            "name": "VidSrc.ru",
+            "baseUrl": "https://vidsrcme.ru",
+            "movieUrlTemplate": "{base}/embed/movie/{id}",
+            "tvUrlTemplate": "{base}/embed/tv/{id}/{season}/{episode}",
+            "tier": 1,
+            "reliability": 84,
+            "cloudflare": true,
             "enabled": true
         },
         {
