@@ -5,16 +5,20 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
+import android.view.KeyEvent
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -102,6 +106,15 @@ class VerificationActivity : AppCompatActivity() {
             // origins, so third-party cookies must be allowed.
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
+            // ── TV / D-pad support ──
+            // On Google TV the user navigates with a remote (D-pad). The
+            // WebView must be focusable so the directional pad can move focus
+            // INTO the web content (e.g. to activate a Cloudflare "checkbox"
+            // or a reCAPTCHA tile). Without this the remote cannot interact
+            // with the challenge at all.
+            isFocusable = true
+            isFocusableInTouchMode = true
+
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     progressBar.visibility = View.VISIBLE
@@ -110,6 +123,10 @@ class VerificationActivity : AppCompatActivity() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     progressBar.visibility = View.GONE
                     if (url == null || solved || isFinishing) return
+                    // Give the WebView initial focus so the user can
+                    // immediately start navigating the challenge with the
+                    // remote on TV. On touch devices this is a no-op.
+                    view?.requestFocus()
                     // Inspect the rendered page to see if the challenge is gone.
                     checkIfChallengeSolved(view, url)
                 }
@@ -125,28 +142,49 @@ class VerificationActivity : AppCompatActivity() {
             visibility = View.GONE
         }
 
-        // A small, semi-transparent banner so the user understands what to do.
+        // ── TV-friendly banner ──
+        // Larger text + explicit TV/remote instructions so the user on a
+        // Google TV box understands they must use the remote to complete the
+        // challenge shown below, then move focus to "Done" and press OK.
         val banner = TextView(this).apply {
-            text = "Human verification required — please complete the challenge, then tap Done."
+            text = "⚠ Human verification required.\nUse your remote to complete the challenge below, then select Done."
             setTextColor(Color.WHITE)
-            setBackgroundColor(0xCC000000.toInt())
-            setPadding(24, 16, 24, 16)
-            textSize = 13f
+            setBackgroundColor(0xE6000000.toInt())
+            setPadding(28, 20, 28, 20)
+            textSize = 15f
             gravity = Gravity.CENTER
+            // Banner is informational, not focusable — keep D-pad focus on
+            // the WebView / Done button.
+            isFocusable = false
         }
 
-        // Manual "Done" button — a fallback in case auto-detection misses a
-        // solved challenge (e.g. an iframe captcha that doesn't trigger a
-        // page-level navigation).
-        val doneButton = TextView(this).apply {
-            text = "  Done  "
+        // ── Manual "Done" button (real Button = D-pad focusable by default) ──
+        // Using a real android.widget.Button (not a TextView) so it is
+        // focusable and navigable with a TV remote's D-pad out of the box.
+        // A visible focus highlight (bright ring + background change) tells
+        // the TV user which control is currently selected.
+        val doneButton = Button(this).apply {
+            text = "Done"
             setTextColor(Color.WHITE)
-            setBackgroundColor(0xFF1976D2.toInt())
-            setPadding(32, 16, 32, 16)
-            textSize = 14f
-            gravity = Gravity.CENTER
+            setPadding(48, 20, 48, 20)
+            textSize = 15f
+            // Default (unfocused) appearance.
+            background = ColorDrawable(0xFF1976D2.toInt())
+            // Explicitly focusable for D-pad navigation on TV.
+            isFocusable = true
+            isFocusableInTouchMode = true
+            // Visible focus highlight so the TV user can see it's selected.
+            setOnFocusChangeListener { v, hasFocus ->
+                v.background = if (hasFocus) {
+                    ColorDrawable(0xFFFFC107.toInt()) // amber = focused
+                } else {
+                    ColorDrawable(0xFF1976D2.toInt())  // blue = normal
+                }
+            }
             setOnClickListener { onChallengeSolved(webView.url ?: "") }
         }
+
+        doneButtonRef = doneButton
 
         val bannerRow = FrameLayout(this).apply {
             addView(banner, FrameLayout.LayoutParams(
@@ -158,7 +196,7 @@ class VerificationActivity : AppCompatActivity() {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.END or Gravity.CENTER_VERTICAL
-            ).apply { setMargins(0, 4, 8, 4) })
+            ).apply { setMargins(0, 6, 12, 6) })
         }
 
         root.addView(webView, FrameLayout.LayoutParams(
@@ -191,6 +229,47 @@ class VerificationActivity : AppCompatActivity() {
         referer?.let { headers["Referer"] = it }
         webView.loadUrl(url, headers)
     }
+
+    // ---------------------------------------------------------------- //
+    //  D-pad / remote key handling (Google TV)                          //
+    // ---------------------------------------------------------------- //
+
+    /**
+     * On a TV remote the directional pad moves focus between the WebView
+     * (where the challenge lives) and the Done button. We help this along:
+     *
+     *  - DPAD_DOWN from the top banner area moves focus into the WebView.
+     *  - DPAD_UP from the WebView moves focus back to the Done button so the
+     *    user can confirm after solving.
+     *  - KEYCODE_DPAD_CENTER / ENTER while focus is on the WebView submits
+     *    any focused element (Cloudflare's checkbox etc.).
+     *
+     * This keeps the verification flow fully usable with only a remote.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (solved || isFinishing) return super.onKeyDown(keyCode, event)
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> {
+                // Moving up from the WebView → jump to the Done button so the
+                // user can finish after completing the challenge.
+                if (webView.hasFocus()) {
+                    doneButtonRef?.requestFocus()
+                    return true
+                }
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                // Moving down from the Done button → drop into the WebView.
+                if (doneButtonRef?.hasFocus() == true) {
+                    webView.requestFocus()
+                    return true
+                }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    /** Holder so onKeyDown can reach the Done button. */
+    private var doneButtonRef: Button? = null
 
     // ---------------------------------------------------------------- //
     //  Challenge detection                                              //
@@ -346,6 +425,7 @@ class VerificationActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         timeoutHandler?.removeCallbacksAndMessages(null)
+        doneButtonRef = null
         webView.destroy()
     }
 }
