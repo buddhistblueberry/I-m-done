@@ -127,7 +127,7 @@ object KissKhExtractor {
             Log.w(TAG, "KissKH search failed: ${e.message}")
             return@withContext Result.Error("KissKH: search failed")
         }
-        if (dramas.isEmpty()) {
+        if (dramas.length() == 0) {
             Log.w(TAG, "KissKH: no results for \"${info.title}\"")
             return@withContext Result.Error("KissKH: no results")
         }
@@ -152,13 +152,14 @@ object KissKhExtractor {
             Log.w(TAG, "KissKH episode fetch failed: ${e.message}")
             return@withContext Result.Error("KissKH: episode fetch failed")
         }
-        if (episodes.isEmpty()) {
+        if (episodes.length() == 0) {
             Log.w(TAG, "KissKH: no episodes for drama $dramaId")
             return@withContext Result.Error("KissKH: no episodes")
         }
 
         val target = pickEpisode(episodes, isTv, season, episode)
-        val videoUrl = target?.optString("Video")?.orEmpty()
+            ?: return@withContext Result.Error("KissKH: no matching episode")
+        val videoUrl = target.optString("Video").orEmpty()
         if (videoUrl.isBlank() || !looksPlayable(videoUrl)) {
             Log.w(TAG, "KissKH: no playable Video for s${season}e${episode}")
             return@withContext Result.Error("KissKH: no video url")
