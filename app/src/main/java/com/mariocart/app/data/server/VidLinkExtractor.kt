@@ -440,7 +440,7 @@ object VidLinkExtractor {
                 // Read only the first 1 KB (capped by the Range header above).
                 val source = resp.body ?: return isVideo
                 val buf = ByteArray(1024)
-                val read = source.byteStream.read(buf)
+                val read = source.byteStream().read(buf)
                 val prefix = if (read > 0) String(buf, 0, read, Charsets.UTF_8) else ""
                 if (prefix.contains("#EXTM3U")) return true
                 if (prefix.contains("<MPD")) return true
