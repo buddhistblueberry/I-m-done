@@ -598,7 +598,7 @@ fun PlayerScreen(
                     Log.d("Player", "\u23ed\ufe0f MeowTV excluded this round")
                     return null
                 }
-                Log.d("Player", "\U0001f3c7 MeowTV: extracting\u2026")
+                Log.d("Player", "🏇 MeowTV: extracting\u2026")
                 val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
                     MeowTvExtractor.extract(tmdbId, contentType, season, episode)
                 }
@@ -613,7 +613,7 @@ fun PlayerScreen(
                     Log.d("Player", "\u23ed\ufe0f KissKH excluded this round")
                     return null
                 }
-                Log.d("Player", "\U0001f3c7 KissKH: extracting\u2026")
+                Log.d("Player", "🏇 KissKH: extracting\u2026")
                 val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
                     KissKhExtractor.extract(tmdbId, contentType, season, episode)
                 }
@@ -628,7 +628,7 @@ fun PlayerScreen(
                     Log.d("Player", "\u23ed\ufe0f VidSync excluded this round")
                     return null
                 }
-                Log.d("Player", "\U0001f3c7 VidSync: extracting\u2026")
+                Log.d("Player", "🏇 VidSync: extracting\u2026")
                 val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
                     VidSyncExtractor.extract(tmdbId, contentType, season, episode)
                 }
