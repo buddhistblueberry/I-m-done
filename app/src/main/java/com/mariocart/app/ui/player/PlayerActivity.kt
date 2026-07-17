@@ -732,6 +732,21 @@ fun PlayerScreen(
                     DirectWinner(it.url, it.headers, it.providerName.ifBlank { "TwoEmbed" })
                 }
             }
+            suspend fun tryVidSrcMe(): DirectWinner? {
+                if ("VidSrcMe" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f VidSrcMe excluded this round")
+                    return null
+                }
+                Log.d("Player", "🏇 VidSrcMe: extracting sub-servers\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    VidSrcMeResolver.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? VidSrcMeResolver.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 VidSrcMe hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "VidSrcMe" })
+                }
+            }
+
 
             suspend fun trySuperEmbed(): DirectWinner? {
                 if ("SuperEmbed" in excluded) {
@@ -867,7 +882,8 @@ fun PlayerScreen(
                                 async { safe { tryVidSync() } },
                                 async { safe { tryLordFlix() } },
                                 async { safe { tryDahmer() } },
-                                async { safe { tryTwoEmbed() } }
+                                async { safe { tryTwoEmbed() } },
+                                async { safe { tryVidSrcMe() } }
                                 // EXCLUDED (confirmed dead/timeout-prone in 2026):
                                 //   tryVidSrcPro()   → 12 s read timeout
                                 //   trySuperEmbed()  → seapi.link DNS dead
