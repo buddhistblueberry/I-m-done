@@ -49,17 +49,16 @@ import com.mariocart.app.data.server.StreamExtractor
 import com.mariocart.app.data.server.StreamProviders
 import com.mariocart.app.data.server.VidLinkExtractor
 import com.mariocart.app.data.server.VidSrcExtractor
+import com.mariocart.app.data.server.VidSrcNetExtractor
 import com.mariocart.app.data.server.VidStormExtractor
 import com.mariocart.app.data.server.VideasyExtractor
 import com.mariocart.app.data.server.VixSrcExtractor
 import com.mariocart.app.data.server.TwoEmbedExtractor
 import com.mariocart.app.ui.theme.MarioCartTheme
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * PlayerActivity — the on-device video player.
@@ -161,6 +160,17 @@ class PlayerActivity : ComponentActivity() {
          * the embed/LookMovie stages just as if all extractors had errored.
          */
         const val RACE_TIMEOUT_MS = 12_000L
+
+        /**
+         * Per-extractor timeout for the sequential direct-API failover
+         * (Stage 0+1). Each pure-HTTP extractor is given this long to
+         * resolve a playable URL before we give up on it and move on to
+         * the next extractor. 7 s is long enough for VidSrc's multi-hop
+         * RCP/PRORCP pipeline (~2.4 s on a fast connection, up to ~6 s on
+         * 3G) while keeping worst-case total wait bounded when several
+         * extractors fail in a row.
+         */
+        const val PROVIDER_TIMEOUT_MS = 7_000L
 
         /**
          * Factory used by [com.mariocart.app.ui.MainActivity].
@@ -433,573 +443,234 @@ fun PlayerScreen(
 
         val activity = localContext as? android.app.Activity
 
-        // ── Stage 0+1: VidStorm + VidSrc raced in PARALLEL (auto mode) ── //
+        // ── Stage 0+1: direct-API sequential failover (auto mode) ── //
         // Skipped when the user manually picked a server (start == STAGE_EMBED):
-        // VidStorm/VidSrc ignore ServerManager ordering, so running them would
-        // defeat the user's explicit choice (the embed stage below honours it).
+        // the direct extractors ignore ServerManager ordering, so running them
+        // would defeat the user's explicit choice (the embed stage below
+        // honours it).
         //
-        // ## Why race instead of sequential (the "shows are super slow" fix)
+        // ## Why SEQUENTIAL failover (not a parallel race)
         //
-        // VidStorm and VidSrc are *complementary*, not redundant:
-        //  - VidStorm (the FilmCave "cloud/servers" backend) returns a DIRECT
-        //    .m3u8/.mp4 in ONE HTTP call. For a subset of popular MOVIES
-        //    (Avatar, Spider-Man NWH, Top Gun Maverick…) this is a live,
-        //    verified URL → playback in ~0.5 s. That is why "movies play very
-        //    fast". But for most titles it returns a dead source (a 404-as-`.`
-        //    HLS body, or a hellstorm.lol mp4 that 403s an OkHttp client), so
-        //    VidStorm alone yields nothing.
-        //  - VidSrc (vidsrc.me → cloudorchestranova RCP/PRORCP) resolves
-        //    almost EVERYTHING — including all the movies VidStorm misses AND
-        //    every TV episode — to a live #EXTM3U, in ~2.4 s over plain
-        //    OkHttp. No WebView, no JS challenge.
+        // Build 4 (the last working build) used a simple sequential pipeline:
+        // try VidStorm, and if it errored, try VidSrc. Movies played in ~3-4 s.
         //
-        // Previously these ran strictly sequentially: Stage 0 VidStorm first,
-        // and only if it *errored* did we run Stage 1 VidSrc. Two problems:
-        //   1. VidStorm's dead-source detection (esp. the hellstorm playlist
-        //      path used by TV) added ~0.7 s of pure overhead before VidSrc
-        //      could even start — so TV took ~3.1 s while fast movies took
-        //      ~0.5 s. "Shows play super slow vs movies."
-        //   2. The old verifyUrl() treated a 403 hellstorm mp4 as "works",
-        //      so for TV VidStorm returned a DEAD url as the stream, ExoPlayer
-        //      choked on the HTML "ACCESS DENIED" body, and VidSrc was NEVER
-        //      reached → "shows wouldn't play at all" (now fixed in
-        //      VidStormExtractor.verifyUrl).
+        // The regression that broke everything was a commit that turned this
+        // into a 10-way `select{}` coroutine race (5 direct extractors + a
+        // WebView embed + more added over time) wrapped in a single 12 s
+        // withTimeout. That race was fragile:
+        //   - A single slow/hung extractor (e.g. a Cloudflare-blocked VixSrc,
+        //     or a VidSrc token round-trip that stalls) could win the race by
+        //     returning a dead-but-non-Error body, starving the fast winners.
+        //   - The `select` cancelled losers, so when the "winner" turned out
+        //     to be a dead URL ExoPlayer later rejected, the good candidates
+        //     were already gone and we fell all the way through to the slow
+        //     WebView stages.
+        //   - The 12 s wall-clock meant a few extractors simply never got a
+        //     fair shot.
         //
-        // Racing them in parallel fixes both: whichever resolves first wins.
-        // A fast-movie VidStorm hit still wins in ~0.5 s (unchanged), while TV
-        // now resolves via VidSrc in ~2.4 s *without* waiting on VidStorm's
-        // dead-end. Both run on Dispatchers.IO so they truly run at once.
+        // This restores the build-4 philosophy — simple, fast, predictable —
+        // but with MORE direct APIs and a per-extractor timeout so one slow
+        // server can never block the others for more than PROVIDER_TIMEOUT_MS.
         //
-        // If BOTH error (rare), we fall through to the embed/LookMovie stages.
+        // Order matters: the fastest, highest-coverage extractors go first.
+        //   VidStorm  → one HTTP call, direct .m3u8/.mp4 (fast for popular movies)
+        //   VidSrc    → vidsrc.me RCP/PRORCP, resolves almost everything (~2.4 s)
+        //   VidSrcNet → vidsrc.net/cloudnestra with full 12-decoder pipeline
+        //   VidLink   → /api/player?tmdb direct HLS
+        //   VixSrc    → vidsrc.xyz /vixsrc embed
+        //   NoTorrent → Stremio addon (great TV coverage)
+        //   Videasy   → videasy.stream
+        //   LordFlix  → lordflix alternative
+        //   DahmerMovies → dahmermovies fallback
+        //   TwoEmbed  → 2embed.cc WebView-style direct
+        //
+        // The FIRST extractor to return a verified Stream wins and we stop
+        // immediately. If all return Error/timeout, we fall through to
+        // Stage 2 (WebView embed) which is now re-enabled in auto mode.
         if (start <= PlayerActivity.STAGE_VIDSRC) {
             currentStage = PlayerActivity.STAGE_VIDSTORM
-            infoMessage = "Finding best stream…"
+            infoMessage = "Finding best stream\u2026"
 
-            // Race the four direct extractors AND the WebView embed pipeline
-            // ALL AT ONCE. The first to return a verified Stream wins; the
-            // losers are cancelled. All run concurrently on IO.
-            //
-            // ## Why also race the WebView here (the "Interstellar is slow" fix)
-            //
-            // For popular movies VidStorm/VidSrc resolve a DIRECT url in
-            // ~0.5-2.4 s — they win the race and the WebView job is cancelled,
-            // so there is zero overhead for fast titles.
-            //
-            // But for titles where ALL four direct extractors fail (e.g.
-            // Interstellar: VidStorm returns a fake-404 "Boron" source, VidSrc's
-            // token resolution yields nothing, VidLink's API returns an empty
-            // body, VixSrc is behind Cloudflare) the old code waited for every
-            // direct extractor to time out (~25 s) and ONLY THEN started the
-            // WebView embed stage from scratch — another ~5-18 s. That made
-            // "some movies don't play / take forever".
-            //
-            // By launching the WebView embed extraction in parallel here, a
-            // WebView provider that can pass Cloudflare (2embed, vidsrc.to,
-            // smashystream…) is already loading while the direct APIs race.
-            // If the direct APIs all fail, the WebView result is often already
-            // ready (or nearly) — cutting worst-case wait from ~40 s to ~5 s.
-            val winner: Any? = try {
-                withTimeout(PlayerActivity.RACE_TIMEOUT_MS) {
-                coroutineScope {
-                    // Provider-exclusion guard: when re-racing after an
-                    // ExoPlayer playback failure (see onPlayerError below),
-                    // providers whose stream ExoPlayer already rejected are
-                    // short-circuited to Error so a DIFFERENT racer can win.
-                    // This is what makes Interstellar play (NoTorrent wins
-                    // once VidStorm's dead URL is excluded) without dropping
-                    // any other title.
-                    val excluded = excludedRaceProviders
-                    val vidStorm = async {
-                        if ("VidStorm" in excluded) {
-                            Log.d("Player", "⏭️ VidStorm excluded this race round")
-                            VidStormExtractor.Result.Error("VidStorm excluded (already tried)")
-                        } else try {
-                            VidStormExtractor.extract(tmdbId, contentType, season, episode)
-                        } catch (e: Exception) {
-                            Log.e("Player", "💥 VidStorm extraction failed", e)
-                            VidStormExtractor.Result.Error(e.message ?: "VidStorm extraction failed")
-                        }
-                    }
-                    val vidSrc = async {
-                        if ("VidSrc" in excluded) {
-                            Log.d("Player", "⏭️ VidSrc excluded this race round")
-                            VidSrcExtractor.Result.Error("VidSrc excluded (already tried)")
-                        } else try {
-                            VidSrcExtractor.extract(tmdbId, contentType, season, episode)
-                        } catch (e: Exception) {
-                            Log.e("Player", "💥 VidSrc extraction failed", e)
-                            VidSrcExtractor.Result.Error(e.message ?: "VidSrc extraction failed")
-                        }
-                    }
-                    val vidLink = async {
-                        if ("VidLink" in excluded) {
-                            Log.d("Player", "⏭️ VidLink excluded this race round")
-                            VidLinkExtractor.Result.Error("VidLink excluded (already tried)")
-                        } else try {
-                            VidLinkExtractor.extract(tmdbId, contentType, season, episode)
-                        } catch (e: Exception) {
-                            Log.e("Player", "💥 VidLink extraction failed", e)
-                            VidLinkExtractor.Result.Error(e.message ?: "VidLink extraction failed")
-                        }
-                    }
-                    val vixSrc = async {
-                        if ("VixSrc" in excluded) {
-                            Log.d("Player", "⏭️ VixSrc excluded this race round")
-                            VixSrcExtractor.Result.Error("VixSrc excluded (already tried)")
-                        } else try {
-                            VixSrcExtractor.extract(tmdbId, contentType, season, episode)
-                        } catch (e: Exception) {
-                            Log.e("Player", "💥 VixSrc extraction failed", e)
-                            VixSrcExtractor.Result.Error(e.message ?: "VixSrc extraction failed")
-                        }
-                    }
-                    // 6th concurrent racer: NoTorrent Stremio addon. This is
-                    // the extractor that reliably resolves the "stubborn"
-                    // titles VidStorm/VidSrc miss — notably Interstellar (157336)
-                    // and LOTR: Return of the King (122), where VidStorm's Boron
-                    // source is a dead 404-in-disguise and VidSrc's token
-                    // resolution yields nothing. NoTorrent returns 8–18 verified
-                    // HLS/MP4 streams for both. It does one extra round-trip
-                    // (TMDB→IMDb) before the addon query, so it is slightly
-                    // slower to first result than the pure-TMDB extractors, but
-                    // for the titles only it can resolve that is a net win.
-                    val noTorrent = async {
-                        if ("NoTorrent" in excluded) {
-                            Log.d("Player", "⏭️ NoTorrent excluded this race round")
-                            NoTorrentExtractor.Result.Error("NoTorrent excluded (already tried)")
-                        } else try {
-                            NoTorrentExtractor.extract(tmdbId, contentType, season, episode)
-                        } catch (e: Exception) {
-                            Log.e("Player", "💥 NoTorrent extraction failed", e)
-                            NoTorrentExtractor.Result.Error(e.message ?: "NoTorrent extraction failed")
-                        }
-                    }
-                    // 5th concurrent racer: the WebView embed pipeline. This
-                    // is the same EmbedExtractor.extractFromProviders() that
-                    // Stage 2 calls — but now it starts immediately, in
-                    // parallel with the direct APIs, instead of after they all
-                    // fail. Only launched in auto mode (start == STAGE_VIDSTORM)
-                    // and when we have an Activity (WebView needs one).
-                    val embedAsync = if (start == PlayerActivity.STAGE_VIDSTORM && activity != null) {
-                        async {
-                            try {
-                                EmbedExtractor.extractFromProviders(
-                                    context = activity,
-                                    contentType = contentType,
-                                    tmdbId = tmdbId,
-                                    season = season,
-                                    episode = episode,
-                                    onChallengeNeeded = null
-                                )
-                            } catch (e: Exception) {
-                                Log.e("Player", "💥 Parallel embed extraction failed", e)
-                                EmbedExtractor.Result.Error(e.message ?: "Embed extraction failed")
-                            }
-                        }
-                    } else null
+            val excluded = excludedRaceProviders
 
-                    // 7th concurrent racer: Videasy (videasy.net) — a 10-server
-                    // aggregator that resolves direct playable sources by
-                    // TITLE (not TMDB-id-only), so it covers movies AND TV
-                    // (9 of 10 servers support TV). Flow: TMDB→title/year/imdb,
-                    // query 10 servers in parallel, decrypt the encrypted
-                    // response via enc-dec.app, return the first source URL.
-                    // Uses the unverified-fallback pattern (returns the URL to
-                    // ExoPlayer even if a bare OkHttp probe can't confirm it).
-                    val videasy = async {
-                        if ("Videasy" in excluded) {
-                            Log.d("Player", "⏭️ Videasy excluded this race round")
-                            VideasyExtractor.Result.Error("Videasy excluded (already tried)")
-                        } else try {
-                            VideasyExtractor.extract(tmdbId, contentType, season, episode)
-                        } catch (e: Exception) {
-                            Log.e("Player", "💥 Videasy extraction failed", e)
-                            VideasyExtractor.Result.Error(e.message ?: "Videasy extraction failed")
-                        }
-                    }
-
-                    // 8th concurrent racer: LordFlix (lordflix.org) — another
-                    // 10-server aggregator using the enc-dec.app bridge. All 10
-                    // servers support movies AND TV. Flow: TMDB→title/year/
-                    // imdb, sign proxy URL via enc-dec.app, fetch encrypted
-                    // stream, decrypt to HLS playlist URL. Unverified-fallback.
-                    val lordflix = async {
-                        if ("LordFlix" in excluded) {
-                            Log.d("Player", "⏭️ LordFlix excluded this race round")
-                            LordFlixExtractor.Result.Error("LordFlix excluded (already tried)")
-                        } else try {
-                            LordFlixExtractor.extract(tmdbId, contentType, season, episode)
-                        } catch (e: Exception) {
-                            Log.e("Player", "💥 LordFlix extraction failed", e)
-                            LordFlixExtractor.Result.Error(e.message ?: "LordFlix extraction failed")
-                        }
-                    }
-
-                    // 9th concurrent racer: DahmerMovies (a.111477.xyz) — an
-                    // open-directory direct file link scraper. Covers movies
-                    // AND TV by crawling directory listings for .mkv/.mp4
-                    // files matching the title/season/episode, then wrapping
-                    // the direct URL with a pass-through proxy. Returns the
-                    // direct file URL to ExoPlayer (unverified-fallback).
-                    val dahmer = async {
-                        if ("DahmerMovies" in excluded) {
-                            Log.d("Player", "⏭️ DahmerMovies excluded this race round")
-                            DahmerMoviesExtractor.Result.Error("DahmerMovies excluded (already tried)")
-                        } else try {
-                            DahmerMoviesExtractor.extract(tmdbId, contentType, season, episode)
-                        } catch (e: Exception) {
-                            Log.e("Player", "💥 DahmerMovies extraction failed", e)
-                            DahmerMoviesExtractor.Result.Error(e.message ?: "DahmerMovies extraction failed")
-                        }
-                    }
-
-                    // 10th concurrent racer: TwoEmbed (2embed.to) — a
-                    // Vidcloud/rabbitstream HLS extractor. Covers movies, TV,
-                    // and anime. Flow: embed page→find Vidcloud server→resolve
-                    // rabbitstream URL→get HLS sources. Many titles resolve
-                    // without reCAPTCHA; if not, the race falls through.
-                    val twoembed = async {
-                        if ("TwoEmbed" in excluded) {
-                            Log.d("Player", "⏭️ TwoEmbed excluded this race round")
-                            TwoEmbedExtractor.Result.Error("TwoEmbed excluded (already tried)")
-                        } else try {
-                            TwoEmbedExtractor.extract(tmdbId, contentType, season, episode)
-                        } catch (e: Exception) {
-                            Log.e("Player", "💥 TwoEmbed extraction failed", e)
-                            TwoEmbedExtractor.Result.Error(e.message ?: "TwoEmbed extraction failed")
-                        }
-                    }
-
-                    // select{} suspends until the FIRST async completes; we
-                    // then inspect its result. We keep polling as long as a
-                    // completed branch is an Error (so a real Stream from
-                    // another branch can still win), and stop on the first
-                    // Stream or when all active branches have completed.
-                    var stormResult: VidStormExtractor.Result? = null
-                    var srcResult: VidSrcExtractor.Result? = null
-                    var linkResult: VidLinkExtractor.Result? = null
-                    var vixResult: VixSrcExtractor.Result? = null
-                    var noTorrentResult: NoTorrentExtractor.Result? = null
-                    var embedResult: EmbedExtractor.Result? = null
-                    var videasyResult: VideasyExtractor.Result? = null
-                    var lordflixResult: LordFlixExtractor.Result? = null
-                    var dahmerResult: DahmerMoviesExtractor.Result? = null
-                    var twoembedResult: TwoEmbedExtractor.Result? = null
-                    // Remember an embed Challenge so we can surface it if no
-                    // direct Stream wins (the user may need to solve it).
-                    var embedChallenge: EmbedExtractor.Result.Challenge? = null
-                    var raceWinner: Any? = null
-                    while (raceWinner == null &&
-                        (stormResult == null || srcResult == null ||
-                            linkResult == null || vixResult == null ||
-                            noTorrentResult == null ||
-                            videasyResult == null ||
-                            lordflixResult == null ||
-                            dahmerResult == null ||
-                            twoembedResult == null ||
-                            (embedAsync != null && embedResult == null))
-                    ) {
-                        raceWinner = select<Any?> {
-                            if (stormResult == null) {
-                                vidStorm.onAwait { r ->
-                                    stormResult = r
-                                    if (r is VidStormExtractor.Result.Stream) r
-                                    else linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
-                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
-                                        ?: noTorrentResult?.let { if (it is NoTorrentExtractor.Result.Stream) it else null }
-                                        ?: videasyResult?.let { if (it is VideasyExtractor.Result.Stream) it else null }
-                                        ?: lordflixResult?.let { if (it is LordFlixExtractor.Result.Stream) it else null }
-                                        ?: dahmerResult?.let { if (it is DahmerMoviesExtractor.Result.Stream) it else null }
-                                        ?: twoembedResult?.let { if (it is TwoEmbedExtractor.Result.Stream) it else null }
-                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
-                                        ?: embedResult?.let { if (it is EmbedExtractor.Result.Stream) it else null }
-                                }
-                            }
-                            if (srcResult == null) {
-                                vidSrc.onAwait { r ->
-                                    srcResult = r
-                                    if (r is VidSrcExtractor.Result.Stream) r
-                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
-                                        ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
-                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
-                                        ?: noTorrentResult?.let { if (it is NoTorrentExtractor.Result.Stream) it else null }
-                                        ?: videasyResult?.let { if (it is VideasyExtractor.Result.Stream) it else null }
-                                        ?: lordflixResult?.let { if (it is LordFlixExtractor.Result.Stream) it else null }
-                                        ?: dahmerResult?.let { if (it is DahmerMoviesExtractor.Result.Stream) it else null }
-                                        ?: twoembedResult?.let { if (it is TwoEmbedExtractor.Result.Stream) it else null }
-                                        ?: embedResult?.let { if (it is EmbedExtractor.Result.Stream) it else null }
-                                }
-                            }
-                            if (linkResult == null) {
-                                vidLink.onAwait { r ->
-                                    linkResult = r
-                                    if (r is VidLinkExtractor.Result.Stream) r
-                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
-                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
-                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
-                                        ?: noTorrentResult?.let { if (it is NoTorrentExtractor.Result.Stream) it else null }
-                                        ?: videasyResult?.let { if (it is VideasyExtractor.Result.Stream) it else null }
-                                        ?: lordflixResult?.let { if (it is LordFlixExtractor.Result.Stream) it else null }
-                                        ?: dahmerResult?.let { if (it is DahmerMoviesExtractor.Result.Stream) it else null }
-                                        ?: twoembedResult?.let { if (it is TwoEmbedExtractor.Result.Stream) it else null }
-                                        ?: embedResult?.let { if (it is EmbedExtractor.Result.Stream) it else null }
-                                }
-                            }
-                            if (vixResult == null) {
-                                vixSrc.onAwait { r ->
-                                    vixResult = r
-                                    if (r is VixSrcExtractor.Result.Stream) r
-                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
-                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
-                                        ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
-                                        ?: noTorrentResult?.let { if (it is NoTorrentExtractor.Result.Stream) it else null }
-                                        ?: videasyResult?.let { if (it is VideasyExtractor.Result.Stream) it else null }
-                                        ?: lordflixResult?.let { if (it is LordFlixExtractor.Result.Stream) it else null }
-                                        ?: dahmerResult?.let { if (it is DahmerMoviesExtractor.Result.Stream) it else null }
-                                        ?: twoembedResult?.let { if (it is TwoEmbedExtractor.Result.Stream) it else null }
-                                        ?: embedResult?.let { if (it is EmbedExtractor.Result.Stream) it else null }
-                                }
-                            }
-                            if (noTorrentResult == null) {
-                                noTorrent.onAwait { r ->
-                                    noTorrentResult = r
-                                    if (r is NoTorrentExtractor.Result.Stream) r
-                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
-                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
-                                        ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
-                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
-                                        ?: videasyResult?.let { if (it is VideasyExtractor.Result.Stream) it else null }
-                                        ?: lordflixResult?.let { if (it is LordFlixExtractor.Result.Stream) it else null }
-                                        ?: dahmerResult?.let { if (it is DahmerMoviesExtractor.Result.Stream) it else null }
-                                        ?: twoembedResult?.let { if (it is TwoEmbedExtractor.Result.Stream) it else null }
-                                        ?: embedResult?.let { if (it is EmbedExtractor.Result.Stream) it else null }
-                                }
-                            }
-                            if (videasyResult == null) {
-                                videasy.onAwait { r ->
-                                    videasyResult = r
-                                    if (r is VideasyExtractor.Result.Stream) r
-                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
-                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
-                                        ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
-                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
-                                        ?: noTorrentResult?.let { if (it is NoTorrentExtractor.Result.Stream) it else null }
-                                        ?: lordflixResult?.let { if (it is LordFlixExtractor.Result.Stream) it else null }
-                                        ?: dahmerResult?.let { if (it is DahmerMoviesExtractor.Result.Stream) it else null }
-                                        ?: twoembedResult?.let { if (it is TwoEmbedExtractor.Result.Stream) it else null }
-                                        ?: embedResult?.let { if (it is EmbedExtractor.Result.Stream) it else null }
-                                }
-                            }
-                            if (lordflixResult == null) {
-                                lordflix.onAwait { r ->
-                                    lordflixResult = r
-                                    if (r is LordFlixExtractor.Result.Stream) r
-                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
-                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
-                                        ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
-                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
-                                        ?: noTorrentResult?.let { if (it is NoTorrentExtractor.Result.Stream) it else null }
-                                        ?: videasyResult?.let { if (it is VideasyExtractor.Result.Stream) it else null }
-                                        ?: dahmerResult?.let { if (it is DahmerMoviesExtractor.Result.Stream) it else null }
-                                        ?: twoembedResult?.let { if (it is TwoEmbedExtractor.Result.Stream) it else null }
-                                        ?: embedResult?.let { if (it is EmbedExtractor.Result.Stream) it else null }
-                                }
-                            }
-                            if (dahmerResult == null) {
-                                dahmer.onAwait { r ->
-                                    dahmerResult = r
-                                    if (r is DahmerMoviesExtractor.Result.Stream) r
-                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
-                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
-                                        ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
-                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
-                                        ?: noTorrentResult?.let { if (it is NoTorrentExtractor.Result.Stream) it else null }
-                                        ?: videasyResult?.let { if (it is VideasyExtractor.Result.Stream) it else null }
-                                        ?: lordflixResult?.let { if (it is LordFlixExtractor.Result.Stream) it else null }
-                                        ?: twoembedResult?.let { if (it is TwoEmbedExtractor.Result.Stream) it else null }
-                                        ?: embedResult?.let { if (it is EmbedExtractor.Result.Stream) it else null }
-                                }
-                            }
-                            if (twoembedResult == null) {
-                                twoembed.onAwait { r ->
-                                    twoembedResult = r
-                                    if (r is TwoEmbedExtractor.Result.Stream) r
-                                    else stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
-                                        ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
-                                        ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
-                                        ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
-                                        ?: noTorrentResult?.let { if (it is NoTorrentExtractor.Result.Stream) it else null }
-                                        ?: videasyResult?.let { if (it is VideasyExtractor.Result.Stream) it else null }
-                                        ?: lordflixResult?.let { if (it is LordFlixExtractor.Result.Stream) it else null }
-                                        ?: dahmerResult?.let { if (it is DahmerMoviesExtractor.Result.Stream) it else null }
-                                        ?: embedResult?.let { if (it is EmbedExtractor.Result.Stream) it else null }
-                                }
-                            }
-                            if (embedAsync != null && embedResult == null) {
-                                embedAsync.onAwait { r ->
-                                    embedResult = r
-                                    if (r is EmbedExtractor.Result.Stream) r
-                                    else {
-                                        if (r is EmbedExtractor.Result.Challenge) embedChallenge = r
-                                        stormResult?.let { if (it is VidStormExtractor.Result.Stream) it else null }
-                                            ?: srcResult?.let { if (it is VidSrcExtractor.Result.Stream) it else null }
-                                            ?: linkResult?.let { if (it is VidLinkExtractor.Result.Stream) it else null }
-                                            ?: vixResult?.let { if (it is VixSrcExtractor.Result.Stream) it else null }
-                                            ?: noTorrentResult?.let { if (it is NoTorrentExtractor.Result.Stream) it else null }
-                                            ?: videasyResult?.let { if (it is VideasyExtractor.Result.Stream) it else null }
-                                            ?: lordflixResult?.let { if (it is LordFlixExtractor.Result.Stream) it else null }
-                                            ?: dahmerResult?.let { if (it is DahmerMoviesExtractor.Result.Stream) it else null }
-                                            ?: twoembedResult?.let { if (it is TwoEmbedExtractor.Result.Stream) it else null }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // If none produced a Stream, normalise. Prefer surfacing an
-                    // embed Challenge (so the user can solve it) over a bare
-                    // error. This expression is the coroutineScope return value
-                    // -> assigned to the outer `winner`.
-                    raceWinner ?: embedChallenge ?: run {
-                        val se = (stormResult as? VidStormExtractor.Result.Error)?.message
-                        val xe = (srcResult as? VidSrcExtractor.Result.Error)?.message
-                        val le = (linkResult as? VidLinkExtractor.Result.Error)?.message
-                        val ve = (vixResult as? VixSrcExtractor.Result.Error)?.message
-                        val ne = (noTorrentResult as? NoTorrentExtractor.Result.Error)?.message
-                        val ye = (videasyResult as? VideasyExtractor.Result.Error)?.message
-                        val le2 = (lordflixResult as? LordFlixExtractor.Result.Error)?.message
-                        val de = (dahmerResult as? DahmerMoviesExtractor.Result.Error)?.message
-                        val te = (twoembedResult as? TwoEmbedExtractor.Result.Error)?.message
-                        val ee = (embedResult as? EmbedExtractor.Result.Error)?.message
-                        VidStormExtractor.Result.Error(
-                            se ?: xe ?: le ?: ve ?: ne ?: ye ?: le2 ?: de ?: te ?: ee ?: "All primary extractors yielded nothing"
-                        )
-                    }
+            // Each helper: skip if excluded, run the extractor with a hard
+            // per-extractor timeout, and return a DirectWinner only on a
+            // verified Stream. Errors/timeouts return null so the next
+            // extractor in the chain gets a chance.
+            suspend fun tryVidStorm(): DirectWinner? {
+                if ("VidStorm" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f VidStorm excluded this round")
+                    return null
                 }
-                } // withTimeout
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                Log.w("Player", "⏱️ Race timed out after ${PlayerActivity.RACE_TIMEOUT_MS} ms — falling through to next stage.")
-                VidStormExtractor.Result.Error("Extraction timed out")
-            } catch (e: Exception) {
-                Log.e("Player", "💥 Parallel direct-extractor race failed", e)
-                VidStormExtractor.Result.Error(e.message ?: "extraction race failed")
+                Log.d("Player", "🏇 VidStorm: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    VidStormExtractor.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? VidStormExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 VidStorm hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "VidStorm" })
+                }
             }
 
-            // Apply the winner.
-            when (winner) {
-                is VidStormExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ VidStorm stream (${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "VidStorm" }
-                    isLoading = false
-                    return@LaunchedEffect
+            suspend fun tryVidSrc(): DirectWinner? {
+                if ("VidSrc" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f VidSrc excluded this round")
+                    return null
                 }
-                is VidSrcExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ VidSrc stream (${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "VidSrc" }
-                    isLoading = false
-                    return@LaunchedEffect
+                Log.d("Player", "🏇 VidSrc: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    VidSrcExtractor.extract(tmdbId, contentType, season, episode)
                 }
-                is VidLinkExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ VidLink stream (${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "VidLink" }
-                    isLoading = false
-                    return@LaunchedEffect
+                return (res as? VidSrcExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 VidSrc hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "VidSrc" })
                 }
-                is VixSrcExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ VixSrc stream (${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "VixSrc" }
-                    isLoading = false
-                    return@LaunchedEffect
+            }
+
+            suspend fun tryVidSrcNet(): DirectWinner? {
+                if ("VidSrcNet" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f VidSrcNet excluded this round")
+                    return null
                 }
-                is NoTorrentExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ NoTorrent stream (${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "NoTorrent" }
-                    isLoading = false
-                    return@LaunchedEffect
+                Log.d("Player", "🏇 VidSrcNet: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    VidSrcNetExtractor.extract(tmdbId, contentType, season, episode)
                 }
-                is VideasyExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ Videasy stream (${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "Videasy" }
-                    isLoading = false
-                    return@LaunchedEffect
+                return (res as? VidSrcNetExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 VidSrcNet hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "VidSrcNet" })
                 }
-                is LordFlixExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ LordFlix stream (${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "LordFlix" }
-                    isLoading = false
-                    return@LaunchedEffect
+            }
+
+            suspend fun tryVidLink(): DirectWinner? {
+                if ("VidLink" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f VidLink excluded this round")
+                    return null
                 }
-                is DahmerMoviesExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ DahmerMovies stream (${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "DahmerMovies" }
-                    isLoading = false
-                    return@LaunchedEffect
+                Log.d("Player", "🏇 VidLink: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    VidLinkExtractor.extract(tmdbId, contentType, season, episode)
                 }
-                is TwoEmbedExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ TwoEmbed stream (${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "TwoEmbed" }
-                    isLoading = false
-                    return@LaunchedEffect
+                return (res as? VidLinkExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 VidLink hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "VidLink" })
                 }
-                is EmbedExtractor.Result.Stream -> {
-                    Log.i("Player", "✅ Embed stream (parallel, ${winner.providerName}): ${winner.url}")
-                    streamUrl = winner.url
-                    streamHeaders = winner.headers.ifEmpty {
-                        mapOf("User-Agent" to DEFAULT_UA)
-                    }
-                    deliveringServerName = winner.providerName.ifBlank { "Embed" }
-                    isLoading = false
-                    return@LaunchedEffect
+            }
+
+            suspend fun tryVixSrc(): DirectWinner? {
+                if ("VixSrc" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f VixSrc excluded this round")
+                    return null
                 }
-                is EmbedExtractor.Result.Challenge -> {
-                    if (verificationRounds < PlayerActivity.MAX_VERIFICATION_ROUNDS) {
-                        verificationRounds++
-                        pendingChallengeUrl = winner.challengeUrl
-                        pendingReferer = winner.embedUrl
-                        infoMessage = "Human verification required. Please complete the challenge, then tap Done."
-                        isLoading = false
-                        return@LaunchedEffect
-                    }
-                    Log.w("Player", "Embeds still blocked after verification; trying LookMovie fallback.")
+                Log.d("Player", "🏇 VixSrc: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    VixSrcExtractor.extract(tmdbId, contentType, season, episode)
                 }
-                is VidStormExtractor.Result.Error -> {
-                    Log.w("Player", "All primary extractors yielded nothing (${winner.message}); falling back to embed pipeline.")
+                return (res as? VixSrcExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 VixSrc hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "VixSrc" })
                 }
+            }
+
+            suspend fun tryNoTorrent(): DirectWinner? {
+                if ("NoTorrent" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f NoTorrent excluded this round")
+                    return null
+                }
+                Log.d("Player", "🏇 NoTorrent: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    NoTorrentExtractor.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? NoTorrentExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 NoTorrent hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "NoTorrent" })
+                }
+            }
+
+            suspend fun tryVideasy(): DirectWinner? {
+                if ("Videasy" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f Videasy excluded this round")
+                    return null
+                }
+                Log.d("Player", "🏇 Videasy: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    VideasyExtractor.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? VideasyExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 Videasy hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "Videasy" })
+                }
+            }
+
+            suspend fun tryLordFlix(): DirectWinner? {
+                if ("LordFlix" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f LordFlix excluded this round")
+                    return null
+                }
+                Log.d("Player", "🏇 LordFlix: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    LordFlixExtractor.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? LordFlixExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 LordFlix hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "LordFlix" })
+                }
+            }
+
+            suspend fun tryDahmer(): DirectWinner? {
+                if ("DahmerMovies" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f DahmerMovies excluded this round")
+                    return null
+                }
+                Log.d("Player", "🏇 DahmerMovies: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    DahmerMoviesExtractor.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? DahmerMoviesExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 DahmerMovies hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "DahmerMovies" })
+                }
+            }
+
+            suspend fun tryTwoEmbed(): DirectWinner? {
+                if ("TwoEmbed" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f TwoEmbed excluded this round")
+                    return null
+                }
+                Log.d("Player", "🏇 TwoEmbed: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    TwoEmbedExtractor.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? TwoEmbedExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 TwoEmbed hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "TwoEmbed" })
+                }
+            }
+
+            // Sequential failover: first verified Stream wins, stop immediately.
+            val winner: DirectWinner? =
+                tryVidStorm()
+                    ?: tryVidSrc()
+                    ?: tryVidSrcNet()
+                    ?: tryVidLink()
+                    ?: tryVixSrc()
+                    ?: tryNoTorrent()
+                    ?: tryVideasy()
+                    ?: tryLordFlix()
+                    ?: tryDahmer()
+                    ?: tryTwoEmbed()
+
+            if (winner != null) {
+                Log.i("Player", "🏁 Direct-API winner: ${winner.providerName}")
+                streamUrl = winner.url
+                streamHeaders = winner.headers.ifEmpty {
+                    mapOf("User-Agent" to DEFAULT_UA)
+                }
+                deliveringServerName = winner.providerName
+                isLoading = false
+                return@LaunchedEffect
+            } else {
+                Log.w("Player", "All direct extractors yielded nothing; falling back to WebView embed pipeline.")
             }
         }
 
@@ -1009,13 +680,18 @@ fun PlayerScreen(
         // the user-selected server first. So when start == STAGE_EMBED we
         // jump straight here.
         //
-        // NOTE: In auto mode (start == STAGE_VIDSTORM) the WebView embed
-        // pipeline already ran IN PARALLEL with the direct-API race in Stage 1
-        // (see embedAsync above). Re-running it here would just repeat the
-        // same provider scan, so we skip Stage 2 in auto mode and fall
-        // straight through to Stage 3 (LookMovie). Stage 2 is only reached
-        // when the user explicitly picked a server (start == STAGE_EMBED).
-        if (start == PlayerActivity.STAGE_EMBED && activity != null) {
+        // It is ALSO the fallback when ALL direct-API extractors (Stage 0+1)
+        // yield nothing in auto mode (start <= STAGE_EMBED). The old code
+        // gated this on `start == STAGE_EMBED`, which meant that in auto mode
+        // — after the direct APIs all failed — we fell straight through to
+        // LookMovie and never tried the WebView embed providers at all. That
+        // is why "some movies/shows don't play": the direct APIs didn't have
+        // them, and the embed pipeline was skipped. Using `<=` re-enables the
+        // embed fallback in auto mode so every title gets a fair shot at the
+        // WebView-based providers (2embed, vidsrc.to, smashystream…) which
+        // can pass Cloudflare and resolve titles the pure-HTTP extractors
+        // can't.
+        if (start <= PlayerActivity.STAGE_EMBED && activity != null) {
             infoMessage = "Trying ${ServerManager.allServers().firstOrNull { it.id == selectedServerId }?.name ?: "your server"}…"
             currentStage = PlayerActivity.STAGE_EMBED
             val embedResult = try {
@@ -1273,21 +949,25 @@ fun PlayerScreen(
                         }
 
                         // ── Race-provider exclusion (the Interstellar fix) ──
-                        // If the broken stream came from a Stage-0 race
-                        // provider, exclude it and re-run the SAME race so a
-                        // DIFFERENT racer wins (e.g. NoTorrent for Interstellar
-                        // once VidStorm's dead URL is excluded). We keep doing
-                        // this until every racer has been tried; only then do
-                        // we fall through to the later stages.
+                        // If the broken stream came from a Stage-0 direct
+                        // extractor, exclude it and re-run the sequential
+                        // failover so a DIFFERENT extractor wins (e.g.
+                        // NoTorrent for Interstellar once VidStorm's dead URL
+                        // is excluded). We keep doing this until every direct
+                        // extractor has been tried; only then do we fall
+                        // through to the embed/LookMovie stages.
                         val raceProviderKey = failedProvider?.let { mapRaceProviderKey(it) }
                         if (currentStage == PlayerActivity.STAGE_VIDSTORM &&
                             raceProviderKey != null &&
                             raceProviderKey !in excludedRaceProviders
                         ) {
                             excludedRaceProviders = excludedRaceProviders + raceProviderKey
-                            // If there are still racers left to try, re-race
-                            // from Stage 0; otherwise fall through to Stage 1.
-                            if (excludedRaceProviders.size < 5) {
+                            // If there are still direct extractors left to try,
+                            // re-run Stage 0 (the chain skips excluded ones);
+                            // otherwise fall through to Stage 2 (embed).
+                            // There are 10 direct extractors total, so we
+                            // allow up to 9 exclusions before giving up.
+                            if (excludedRaceProviders.size < 9) {
                                 Log.i("Player", "🔁 Re-racing Stage 0 with $raceProviderKey excluded (tried so far: $excludedRaceProviders)")
                                 startStage = PlayerActivity.STAGE_VIDSTORM
                             } else {
@@ -1980,10 +1660,22 @@ private fun ExoPlayerView(
  * "VidStorm·unverified", "VidSrc·1", "VidLink", "VixSrc", "NoTorrent",
  * "NoTorrent·unverified", etc. We match on the leading canonical key.
  */
+/**
+ * Lightweight holder for a winning direct-API extraction result.
+ * Used by the sequential failover in Stage 0+1 so the per-extractor
+ * `tryXxx()` helpers can return a uniform type regardless of which
+ * extractor's `Result.Stream` they came from.
+ */
+private data class DirectWinner(
+    val url: String,
+    val headers: Map<String, String>,
+    val providerName: String
+)
+
 private fun mapRaceProviderKey(deliveringServerName: String): String? {
     val n = deliveringServerName.substringBefore("·").trim()
     return when (n) {
-        "VidStorm", "VidSrc", "VidLink", "VixSrc", "NoTorrent", "Videasy", "LordFlix", "DahmerMovies", "TwoEmbed" -> n
+        "VidStorm", "VidSrc", "VidSrcNet", "VidLink", "VixSrc", "NoTorrent", "Videasy", "LordFlix", "DahmerMovies", "TwoEmbed" -> n
         else -> null
     }
 }
