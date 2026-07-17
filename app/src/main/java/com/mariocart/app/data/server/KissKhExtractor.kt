@@ -132,7 +132,8 @@ object KissKhExtractor {
             return@withContext Result.Error("KissKH: no results")
         }
         // Pick best match: prefer an exact title match, else first result.
-        val drama = pickBestDrama(dramas, info) ?: dramas[0]
+        val drama = pickBestDrama(dramas, info) ?: dramas.optJSONObject(0)
+            ?: return@withContext Result.Error("KissKH: no drama object")
         val dramaId = drama.optInt("id")
         Log.d(TAG, "KissKH picked drama id=$dramaId title=\"${drama.optString("title").take(40)}\"")
 
