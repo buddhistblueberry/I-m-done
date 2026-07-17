@@ -42,6 +42,9 @@ import com.mariocart.app.data.server.DahmerMoviesExtractor
 import com.mariocart.app.data.server.EmbedExtractor
 import com.mariocart.app.data.server.LookMovieWebExtractor
 import com.mariocart.app.data.server.LordFlixExtractor
+import com.mariocart.app.data.server.MeowTvExtractor
+import com.mariocart.app.data.server.KissKhExtractor
+import com.mariocart.app.data.server.VidSyncExtractor
 import com.mariocart.app.data.server.NoTorrentExtractor
 import com.mariocart.app.data.server.ServerConfig
 import com.mariocart.app.data.server.ServerManager
@@ -479,7 +482,10 @@ fun PlayerScreen(
         //   VidLink   → /api/player?tmdb direct HLS
         //   VixSrc    → vidsrc.xyz /vixsrc embed
         //   NoTorrent → Stremio addon (great TV coverage)
-        //   Videasy   → videasy.stream
+        //   MeowTV    → api.meowtv.ru direct API (EXCELLENT TV-episode coverage)
+        //   Videasy   → videasy.stream (10-server parallel)
+        //   KissKH    → kisskh.do search→episode direct HLS (broad TV catalogue)
+        //   VidSync   → vidsync.xyz / wingsdatabase 12-server parallel
         //   LordFlix  → lordflix alternative
         //   DahmerMovies → dahmermovies fallback
         //   TwoEmbed  → 2embed.cc WebView-style direct
@@ -587,6 +593,51 @@ fun PlayerScreen(
                 }
             }
 
+            suspend fun tryMeowTv(): DirectWinner? {
+                if ("MeowTV" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f MeowTV excluded this round")
+                    return null
+                }
+                Log.d("Player", "\U0001f3c7 MeowTV: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    MeowTvExtractor.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? MeowTvExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 MeowTV hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "MeowTV" })
+                }
+            }
+
+            suspend fun tryKissKh(): DirectWinner? {
+                if ("KissKH" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f KissKH excluded this round")
+                    return null
+                }
+                Log.d("Player", "\U0001f3c7 KissKH: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    KissKhExtractor.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? KissKhExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 KissKH hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "KissKH" })
+                }
+            }
+
+            suspend fun tryVidSync(): DirectWinner? {
+                if ("VidSync" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f VidSync excluded this round")
+                    return null
+                }
+                Log.d("Player", "\U0001f3c7 VidSync: extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    VidSyncExtractor.extract(tmdbId, contentType, season, episode)
+                }
+                return (res as? VidSyncExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 VidSync hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "VidSync" })
+                }
+            }
+
             suspend fun tryVideasy(): DirectWinner? {
                 if ("Videasy" in excluded) {
                     Log.d("Player", "\u23ed\ufe0f Videasy excluded this round")
@@ -655,7 +706,10 @@ fun PlayerScreen(
                     ?: tryVidLink()
                     ?: tryVixSrc()
                     ?: tryNoTorrent()
+                    ?: tryMeowTv()
                     ?: tryVideasy()
+                    ?: tryKissKh()
+                    ?: tryVidSync()
                     ?: tryLordFlix()
                     ?: tryDahmer()
                     ?: tryTwoEmbed()
