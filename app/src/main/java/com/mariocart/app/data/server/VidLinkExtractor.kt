@@ -63,8 +63,8 @@ object VidLinkExtractor {
 
     private val client by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
             .followRedirects(true)
             .build()
     }
@@ -72,8 +72,8 @@ object VidLinkExtractor {
     /** Separate short-timeout client for URL verification. */
     private val verifier by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(6, TimeUnit.SECONDS)
             .followRedirects(true)
             .build()
     }
@@ -210,6 +210,23 @@ object VidLinkExtractor {
             }
         }
 
+        // DASH/HLS alternate manifest (stream.alternates.dash.playlist etc).
+        // ExoPlayer plays DASH natively and it is often more reliable than the
+        // raw mp4 qualities, so use it as a fallback when qualities are empty.
+        val alternates = stream?.optJSONObject("alternates")
+        if (alternates != null) {
+            val dash = alternates.optJSONObject("dash")
+            val dashUrl = dash?.optString("playlist")?.takeIf { it.isNotBlank() }
+            if (!dashUrl.isNullOrBlank() && looksPlayable(dashUrl)) {
+                return dashUrl to parseEmbeddedHeaders(dashUrl)
+            }
+            val hlsAlt = alternates.optJSONObject("hls")
+            val hlsUrl = hlsAlt?.optString("playlist")?.takeIf { it.isNotBlank() }
+            if (!hlsUrl.isNullOrBlank() && looksPlayable(hlsUrl)) {
+                return hlsUrl to parseEmbeddedHeaders(hlsUrl)
+            }
+        }
+
         // Legacy fallback: stream.playlist or top-level playlist (HLS).
         val legacy = stream?.optString("playlist")?.takeIf { it.isNotBlank() }
             ?: json.optString("playlist")?.takeIf { it.isNotBlank() }
@@ -220,11 +237,12 @@ object VidLinkExtractor {
         return null to emptyMap()
     }
 
-    /** Quick heuristic — accept .mp4 / .m3u8 / .mkv URLs. */
+    /** Quick heuristic — accept .mp4 / .m3u8 / .mkv / .mpd URLs. */
     private fun looksPlayable(url: String): Boolean {
         val lower = url.lowercase()
         return lower.contains(".mp4") || lower.contains(".m3u8") ||
             lower.contains(".mkv") || lower.contains(".m4v") ||
+            lower.contains(".mpd") || lower.contains("dash") ||
             lower.contains("/resource/") || lower.contains("/stream/")
     }
 
@@ -398,17 +416,40 @@ object VidLinkExtractor {
         return try {
             val builder = Request.Builder().url(url)
             headers.forEach { (k, v) -> builder.header(k, v) }
-            builder.get()
+            // CRITICAL: send a Range header so the CDN streams only the first
+            // bytes. The previous code did a plain GET + body.string(), which
+            // for a ~200 MB mp4 downloaded the ENTIRE file into RAM just to
+            // sniff the content-type — that took many seconds on mobile data
+            // (often hitting the 10 s read timeout) and risked OOM. A ranged
+            // GET returns 206 in ~50–200 ms with the content-type header we
+            // need, and for HLS it returns the small manifest body.
+            builder.header("Range", "bytes=0-1023").get()
             verifier.newCall(builder.build()).execute().use { resp ->
                 val code = resp.code
                 val ct = resp.header("Content-Type").orEmpty().lowercase()
                 Log.d(TAG, "VidLink verify: HTTP $code  ct=$ct")
-                if (code !in 200..299) return false
-                val body = resp.body?.string().orEmpty()
-                val isHls = body.contains("#EXTM3U")
+                // Accept 200/206/416 (range not satisfiable but resource exists).
+                if (code != 200 && code != 206 && code != 416) return false
+                // Quick content-type sniff — a video/manifest host is fine.
                 val isVideo = ct.contains("video") || ct.contains("mp4") ||
-                    ct.contains("mpegurl") || ct.contains("octet-stream")
-                isHls || isVideo
+                    ct.contains("mpegurl") || ct.contains("dash") ||
+                    ct.contains("octet-stream")
+                if (isVideo) return true
+                // Content-Type may be absent on some CDNs; fall back to a tiny
+                // body read to detect an HLS manifest or an HTML error page.
+                // Read only the first 1 KB (capped by the Range header above).
+                val source = resp.body ?: return isVideo
+                val buf = ByteArray(1024)
+                val read = source.byteStream.read(buf)
+                val prefix = if (read > 0) String(buf, 0, read, Charsets.UTF_8) else ""
+                if (prefix.contains("#EXTM3U")) return true
+                if (prefix.contains("<MPD")) return true
+                // Reject obvious HTML/text error pages.
+                if (ct.startsWith("text/html") || ct.startsWith("text/plain")) {
+                    return false
+                }
+                // No clear signal either way — be optimistic (best-effort).
+                true
             }
         } catch (e: Exception) {
             Log.d(TAG, "VidLink verify: connection failed (${e.message})")

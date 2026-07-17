@@ -155,7 +155,7 @@ class PlayerActivity : ComponentActivity() {
          * coroutineScope cancels all pending asyncs and we fall through to
          * the embed/LookMovie stages just as if all extractors had errored.
          */
-        const val RACE_TIMEOUT_MS = 20_000L
+        const val RACE_TIMEOUT_MS = 12_000L
 
         /**
          * Factory used by [com.mariocart.app.ui.MainActivity].
