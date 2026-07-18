@@ -49,6 +49,7 @@ import com.mariocart.app.ui.theme.Bg
 import com.mariocart.app.ui.theme.Gold
 import com.mariocart.app.ui.theme.GreyButton
 import com.mariocart.app.ui.theme.GreyButtonHover
+import com.mariocart.app.ui.theme.Red
 import com.mariocart.app.ui.theme.TextMuted
 import com.mariocart.app.ui.theme.TextPrimary
 import com.mariocart.app.ui.util.responsiveDims
