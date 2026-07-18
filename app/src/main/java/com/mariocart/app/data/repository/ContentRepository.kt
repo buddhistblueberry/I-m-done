@@ -51,17 +51,17 @@ class ContentRepository {
     /**
      * Drops items that are not valid *movies* — but only from movie content.
      *
-     * TMDB's `tv/*` endpoints and `discover/tv` return `name` (not `title`)
-     * and do NOT include a `media_type` field, so every TV item correctly has
+     * TMDB's tv endpoints and discover/tv return `name` (not `title`) and do
+     * NOT include a `media_type` field, so every TV item correctly has
      * [TmdbItem.isMovie] == false and [TmdbItem.isValidMovie] == false.
      * Naively filtering with `isValidMovie` would therefore discard *all* TV
      * shows — which is exactly the "app only loads movies, not shows" bug.
      *
-     * To stay correct across every caller (movie endpoints, `discover/tv`,
-     * and `search/multi` which mixes both), this filter keeps an item when
-     * EITHER it is a valid movie OR it is a TV show. In other words it only
-     * rejects malformed movie rows (e.g. a movie with no title) and never
-     * rejects a TV show.
+     * To stay correct across every caller (movie endpoints, discover/tv, and
+     * search/multi which mixes both), this filter keeps an item when EITHER it
+     * is a valid movie OR it is a TV show. In other words it only rejects
+     * malformed movie rows (e.g. a movie with no title) and never rejects a
+     * TV show.
      */
     private fun filterValidMovies(items: List<TmdbItem>): List<TmdbItem> =
         items.filter { it.isValidMovie || !it.isMovie }
