@@ -40,6 +40,7 @@ import com.mariocart.app.data.server.DahmerMoviesExtractor
 import com.mariocart.app.data.server.LordFlixExtractor
 import com.mariocart.app.data.server.MeowTvExtractor
 import com.mariocart.app.data.server.KissKhExtractor
+import com.mariocart.app.data.server.LookMovieHeadlessExtractor
 import com.mariocart.app.data.server.VidSyncExtractor
 import com.mariocart.app.data.server.NoTorrentExtractor
 import com.mariocart.app.data.server.ServerConfig
@@ -362,7 +363,7 @@ fun PlayerScreen(
         // candidates with `awaitAll` and ranking them, we keep every good
         // stream queued — failover to the next one is instant.
         //
-        // The 16 direct extractors in the race (all fired simultaneously):
+        // The 17 direct extractors in the race (all fired simultaneously):
         //   NoTorrent   → Stremio addon (great TV coverage)
         //   VidStorm    → one HTTP call, direct .m3u8/.mp4 (fast for popular movies)
         //   VidSrc      → vidsrc.me RCP/PRORCP, resolves almost everything
@@ -379,6 +380,9 @@ fun PlayerScreen(
         //   DahmerMovies→ dahmermovies fallback
         //   TwoEmbed    → 2embed.cc direct API (+ sub-streams VCR/Vesy/XPS)
         //   SuperEmbed  → superembedstream direct HLS
+        //   LookMovie   → headless port of the plugin.video.lookmovietomb Kodi
+        //                 addon (search→storage→security-API), direct .m3u8 with
+        //                 the t_hash cookie in headers — no WebView, no Kodi
         //
         // The race collects ALL resolved candidates with awaitAll (not just
         // the first), so playback starts in ~1-3 s (the time of the FASTEST
@@ -660,6 +664,34 @@ fun PlayerScreen(
                 }
             }
 
+            // ── LookMovie headless engine (Kodi-addon flow, no WebView) ──
+            // This is the no-WebView port of the plugin.video.lookmovietomb
+            // Kodi addon. It runs the addon's search → storage → security-API
+            // flow in pure OkHttp and returns a direct .m3u8 with the t_hash
+            // cookie attached so ExoPlayer plays it headlessly (no local proxy,
+            // no WebView, no Kodi). Best-effort: if LookMovie 403s or hits the
+            // Thread Defence captcha, it returns null and the race moves on.
+            suspend fun tryLookMovie(): DirectWinner? {
+                if ("LookMovie" in excluded) {
+                    Log.d("Player", "\u23ed\ufe0f LookMovie excluded this round")
+                    return null
+                }
+                Log.d("Player", "\ud83c\udfc7 LookMovie (headless): extracting\u2026")
+                val res = withTimeoutOrNull(PlayerActivity.PROVIDER_TIMEOUT_MS) {
+                    LookMovieHeadlessExtractor.extract(
+                        title = title,
+                        year = year,
+                        isMovie = contentType.equals("movie", ignoreCase = true),
+                        season = season,
+                        episode = episode
+                    )
+                }
+                return (res as? LookMovieHeadlessExtractor.Result.Stream)?.let {
+                    Log.i("Player", "\u2705 LookMovie hit: ${it.url}")
+                    DirectWinner(it.url, it.headers, it.providerName.ifBlank { "LookMovie" })
+                }
+            }
+
             // ── ALL-SERVERS PARALLEL RACE (single unified lane) ──
             //
             // Per the user's explicit requests:
@@ -735,7 +767,8 @@ fun PlayerScreen(
                             async { safe { tryLordFlix() } },
                             async { safe { tryDahmer() } },
                             async { safe { tryTwoEmbed() } },
-                            async { safe { trySuperEmbed() } }
+                            async { safe { trySuperEmbed() } },
+                            async { safe { tryLookMovie() } }
                         )
                         // awaitAll so we collect EVERY resolved candidate,
                         // not just the first. safe() guarantees no async
@@ -784,7 +817,7 @@ fun PlayerScreen(
         }
 
         // ── No WebView fallback — every direct extractor already raced ── //
-        // All 16 direct extractors fired in parallel above. If we reach here
+        // All 17 direct extractors fired in parallel above. If we reach here
         // they all returned null/empty. There is no embed / LookMovie / OkHttp
         // WebView stage anymore (removed per "no WebView at all" requirement),
         // so we surface a clear error. The caller (onPlayerError / manual retry)
@@ -1604,7 +1637,7 @@ private fun mapRaceProviderKey(deliveringServerName: String): String? {
 private val RACE_PROVIDER_BASES = setOf(
     "VidStorm", "VidSrc", "VidSrcNet", "VidLink", "VixSrc", "NoTorrent",
     "MeowTV", "Videasy", "KissKH", "VidSync", "LordFlix", "DahmerMovies",
-    "TwoEmbed", "SuperEmbed", "VidSrcPro"
+    "TwoEmbed", "SuperEmbed", "VidSrcPro", "LookMovie"
 )
 
 /**
@@ -1673,7 +1706,7 @@ private fun isEnglishStream(winner: DirectWinner, contentType: String): Boolean 
         "lordflix", "dahmermovies", "meowtv", "vidspark", "autoembed",
         "vidnest", "vidrock", "vidcore", "tvembed", "vidsrcme",
         "vidking", "curtstream", "databasegdriveplayer", "vidsrcpro",
-        "vcr", "vesy", "xps", "smashystream", "hexa", "flixer"
+        "vcr", "vesy", "xps", "smashystream", "hexa", "flixer", "lookmovie"
     )
     val baseName = name.substringBefore("·").substringBefore(" ").trim()
     return defaultEnglishProviders.any { baseName.startsWith(it) || baseName == it }
@@ -1723,6 +1756,9 @@ private fun providerReliability(providerName: String): Int {
         n.startsWith("hexa") -> 40
         n.startsWith("flixer") -> 38
         n.startsWith("vidsrcme") -> 36
+        // LookMovie (headless addon port) — clean direct HLS when reachable,
+        // but best-effort (may 403 / hit Thread Defence), so mid-tier.
+        n.startsWith("lookmovie") -> 58
         // Unknown / fallback.
         else -> 20
     }
