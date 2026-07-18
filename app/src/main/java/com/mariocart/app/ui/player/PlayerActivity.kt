@@ -803,25 +803,55 @@ fun PlayerScreen(
                         // null at the timeout and never hold up the others.
                         // This is the fix for "make sure all the servers are
                         // being used not just some".
-                        val deferreds = listOf(
-                            async { safe { tryNoTorrent() } },
-                            async { safe { tryVidStorm() } },
-                            async { safe { tryVidSrc() } },
-                            async { safe { tryVidSrcMe() } },
-                            async { safe { tryVidSrcPro() } },
-                            async { safe { tryVidSrcNet() } },
-                            async { safe { tryVidLink() } },
-                            async { safe { tryVixSrc() } },
-                            async { safe { tryMeowTv() } },
-                            async { safe { tryVideasy() } },
-                            async { safe { tryKissKh() } },
-                            async { safe { tryVidSync() } },
-                            async { safe { tryLordFlix() } },
-                            async { safe { tryDahmer() } },
-                            async { safe { tryTwoEmbed() } },
-                            async { safe { trySuperEmbed() } },
-                            async { safe { tryLookMovie() } }
-                        )
+                        // ── LookMovie-first for TV shows ──
+                        // Per the user's request, LookMovie fires FIRST in
+                        // the race for TV content so its headless extraction
+                        // gets a head start. For movies, the standard order
+                        // (reliability-tiered) is used. All extractors still
+                        // race in parallel either way; this just ensures
+                        // LookMovie's coroutine is launched first for shows.
+                        val isTvForRace = contentType.equals("tv", ignoreCase = true)
+                        val deferreds = if (isTvForRace) {
+                            listOf(
+                                async { safe { tryLookMovie() } },
+                                async { safe { tryNoTorrent() } },
+                                async { safe { tryVidStorm() } },
+                                async { safe { tryVidSrc() } },
+                                async { safe { tryVidSrcMe() } },
+                                async { safe { tryVidSrcPro() } },
+                                async { safe { tryVidSrcNet() } },
+                                async { safe { tryVidLink() } },
+                                async { safe { tryVixSrc() } },
+                                async { safe { tryMeowTv() } },
+                                async { safe { tryVideasy() } },
+                                async { safe { tryKissKh() } },
+                                async { safe { tryVidSync() } },
+                                async { safe { tryLordFlix() } },
+                                async { safe { tryDahmer() } },
+                                async { safe { tryTwoEmbed() } },
+                                async { safe { trySuperEmbed() } }
+                            )
+                        } else {
+                            listOf(
+                                async { safe { tryNoTorrent() } },
+                                async { safe { tryVidStorm() } },
+                                async { safe { tryVidSrc() } },
+                                async { safe { tryVidSrcMe() } },
+                                async { safe { tryVidSrcPro() } },
+                                async { safe { tryVidSrcNet() } },
+                                async { safe { tryVidLink() } },
+                                async { safe { tryVixSrc() } },
+                                async { safe { tryMeowTv() } },
+                                async { safe { tryVideasy() } },
+                                async { safe { tryKissKh() } },
+                                async { safe { tryVidSync() } },
+                                async { safe { tryLordFlix() } },
+                                async { safe { tryDahmer() } },
+                                async { safe { tryTwoEmbed() } },
+                                async { safe { trySuperEmbed() } },
+                                async { safe { tryLookMovie() } }
+                            )
+                        }
                         // awaitAll so we collect EVERY resolved candidate,
                         // not just the first. safe() guarantees no async
                         // throws, so awaitAll completes cleanly.
@@ -843,11 +873,28 @@ fun PlayerScreen(
             // after English ones. Within each language group we sort by a
             // per-provider reliability weight so the most dependable
             // English source is played first.
+            //
+            // ── LookMovie-first for TV shows ──
+            // Per the user's explicit request: "make sure shows try
+            // lookmovie first before anything else". For TV content, any
+            // LookMovie candidate gets a priority boost above all other
+            // providers (regardless of English/reliability tier), so the
+            // headless LookMovie extractor's stream is always played first
+            // when it resolves. Movies keep the standard English→reliability
+            // ranking since LookMovie's movie catalogue is thinner.
+            val isTvContent = contentType.equals("tv", ignoreCase = true)
             val ranked = raceCandidates
                 .map { RankedCandidate(it, isEnglishStream(it, contentType)) }
                 .sortedWith(
-                    compareByDescending<RankedCandidate> { it.english }
-                        .thenByDescending { providerReliability(it.winner.providerName) }
+                    if (isTvContent) {
+                        compareByDescending<RankedCandidate> {
+                            it.winner.providerName.contains("LookMovie", ignoreCase = true)
+                        }.thenByDescending { it.english }
+                         .thenByDescending { providerReliability(it.winner.providerName) }
+                    } else {
+                        compareByDescending<RankedCandidate> { it.english }
+                            .thenByDescending { providerReliability(it.winner.providerName) }
+                    }
                 )
 
             if (ranked.isNotEmpty()) {
@@ -868,13 +915,7 @@ fun PlayerScreen(
             }
         }
 
-        // ── No WebView fallback — every direct extractor already raced ── //
-        // All 17 direct extractors fired in parallel above. If we reach here
-        // they all returned null/empty. There is no embed / LookMovie / OkHttp
-        // WebView stage anymore (removed per "no WebView at all" requirement),
-        // so we surface a clear error. The caller (onPlayerError / manual retry)
-        // can bump `attempt` to re-fire the race a second time with no
-        // exclusions (a clean second attempt).
+        // ── Final: no stream found from any method ── //
         if (error == null) {
             error = "Couldn't find a working stream. Tap retry to search again, or pick a different server."
         }
