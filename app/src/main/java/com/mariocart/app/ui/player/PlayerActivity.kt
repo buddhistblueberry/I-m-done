@@ -67,15 +67,6 @@ import kotlinx.coroutines.withTimeoutOrNull
  * PlayerActivity — the on-device video player.
  *
  * This is the single activity that actually plays videos. It owns a fully
- * on-device extraction pipeline (no backend server involved):
- *
- *   0. [VidStormExtractor] (PRIMARY) — calls the VidStorm streaming API
- *      (vidstorm.ru/api), the same backend FilmCave's "cloud / servers"
- *      button uses, and resolves a **direct** `.m3u8` / `.mp4` URL for the
-/**
- * PlayerActivity — the on-device video player.
- *
- * This is the single activity that actually plays videos. It owns a fully
  * on-device extraction pipeline (no backend server, NO WebView at all):
  *
  * EVERY direct extractor is fired SIMULTANEOUSLY in a single all-servers
