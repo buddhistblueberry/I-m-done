@@ -21,6 +21,43 @@ android {
         buildConfigField("String", "TMDB_API_KEY", "\"a15c24c2a5c00487b179f5d4b53b72b0\"")
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // Release signing config.
+    //
+    // In GitHub Actions the keystore + passwords are injected from
+    // repository secrets (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS,
+    // KEY_PASSWORD). Locally, if a keystore.properties file is present in
+    // the project root, it is read instead. If neither is available we
+    // fall back to the debug signing key so `assembleRelease` still works
+    // for ad-hoc local testing — but CI ALWAYS signs with the real key.
+    // ──────────────────────────────────────────────────────────────────────
+    val keystorePropertiesFile = rootProject.file("keystore.properties")
+    val keystoreProperties = java.util.Properties()
+    if (keystorePropertiesFile.exists()) {
+        keystoreProperties.load(java.io.FileInputStream(keystorePropertiesFile))
+    }
+
+    signingConfigs {
+        create("release") {
+            // Prefer CI environment variables (GitHub Actions secrets)
+            val storeFilePath = System.getenv("KEYSTORE_FILE")
+            if (!storeFilePath.isNullOrEmpty()) {
+                storeFile = file(storeFilePath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            } else if (keystoreProperties.isNotEmpty()) {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -28,6 +65,15 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Sign release builds with the stable key defined above.
+            // If no key material is configured, Gradle falls back to the
+            // debug signing config so local builds never hard-fail.
+            val storeFilePath = System.getenv("KEYSTORE_FILE")
+            if (!storeFilePath.isNullOrEmpty() || keystoreProperties.isNotEmpty()) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
 

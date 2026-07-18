@@ -5,3 +5,9 @@ local.properties
 build/
 *.iml
 .idea/
+
+# Signing secrets — never commit
+release.keystore
+keystore.properties
+*.keystore
+*.jks
