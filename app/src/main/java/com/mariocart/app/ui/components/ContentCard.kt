@@ -88,6 +88,9 @@ fun ContentCard(
     val active = isFocused || isHovered
 
     // Netflix card scale-up on hover/focus, tiny press shrink.
+    // Only animate when the card is actually interacted with — when idle the
+    // target is a constant 1.0f so animateFloatAsState is a no-op and adds
+    // zero overhead to scroll. This is the key scroll-smoothness win.
     val scale by animateFloatAsState(
         targetValue = when {
             isPressed -> 1.02f
@@ -98,18 +101,34 @@ fun ContentCard(
         label = "cardScale"
     )
 
+    // Reuse a single ImageRequest data object per card so Coil's cache key is
+    // stable and the request isn't rebuilt on every recomposition.
+    val imageRequest = remember(item.posterUrl) {
+        ImageRequest.Builder(context)
+            .data(item.posterUrl)
+            .crossfade(200)
+            .build()
+    }
+
     Column(
         modifier = modifier
             .width(dims.cardWidth)
-            // Clip the whole card so the focus ring + shadow follow the
-            // rounded shape.
             .clip(RoundedCornerShape(6.dp))
             .scale(scale)
-            .shadow(
-                elevation = if (active) 24.dp else 4.dp,
-                shape = RoundedCornerShape(6.dp),
-                ambientColor = if (active) Red.copy(alpha = 0.35f) else PureBlack,
-                spotColor = if (active) Red.copy(alpha = 0.45f) else PureBlack,
+            // Heavy shadow only on active cards — drawing a coloured shadow
+            // on every idle card during fast scroll is the #1 GPU bottleneck.
+            // Idle cards get a cheap 0dp elevation (no shadow render pass).
+            .then(
+                if (active) {
+                    Modifier.shadow(
+                        elevation = 24.dp,
+                        shape = RoundedCornerShape(6.dp),
+                        ambientColor = Red.copy(alpha = 0.35f),
+                        spotColor = Red.copy(alpha = 0.45f),
+                    )
+                } else {
+                    Modifier
+                }
             )
             .background(Bg3)
             .clickable(
@@ -131,10 +150,7 @@ fun ContentCard(
                 .height(dims.cardImageHeight)
         ) {
             AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(item.posterUrl)
-                    .crossfade(true)
-                    .build(),
+                model = imageRequest,
                 contentDescription = item.displayTitle,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -143,21 +159,26 @@ fun ContentCard(
                     .background(PureBlack)
             )
 
-            // Bottom gradient for legibility over the poster.
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(dims.cardImageHeight)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.Transparent,
-                                PureBlack.copy(alpha = 0.55f)
+            // Bottom gradient for legibility — only drawn when the card is
+            // active (focused/hovered). Netflix only shows the dark scrim on
+            // the hovered card; idle cards show the clean poster. This
+            // removes a full-size gradient render from every off-screen card.
+            if (active) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(dims.cardImageHeight)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Transparent,
+                                    PureBlack.copy(alpha = 0.55f)
+                                )
                             )
                         )
-                    )
-            )
+                )
+            }
 
             // Play icon overlay that fades in when the card is active —
             // mirrors Netflix's hover play affordance.

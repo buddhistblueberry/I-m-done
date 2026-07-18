@@ -2,10 +2,14 @@ package com.mariocart.app.ui.tv
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mariocart.app.data.model.TmdbItem
+import com.mariocart.app.data.model.TvEpisode
 import com.mariocart.app.data.model.TvSeason
+import com.mariocart.app.data.model.TvShowDetail
 import com.mariocart.app.data.repository.ContentRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -14,39 +18,44 @@ import kotlinx.coroutines.launch
  * Loads the season list for a TV show from TMDB
  * (ContentRepository.getTvDetails) and tracks the currently selected season.
  *
- * Mirrors the data the LookMovie Kodi addon extracts from `show_storage`
- * (the `seasons` array), but sourced from TMDB so it works before any
- * scraping round-trip.
+ * ## Netflix-style detail + episode list
+ * In addition to seasons, this now also fetches the full [TvShowDetail]
+ * (overview, backdrop, genres, episode runtime) so the picker can show a
+ * Netflix-style detail hero at the top, and fetches the full episode list
+ * for the selected season (each episode with its thumbnail still + overview)
+ * so the episode list can show thumbnails as buttons with descriptions below.
  *
- * ## Speed: in-memory season cache
- * TV shows load noticeably slower than movies because tapping a show opens
- * this picker, which has to wait on a `getTvDetails` network round-trip
- * before it can render anything (movies go straight to the player). To close
- * that gap we cache every show's season list in [seasonCache] for the
- * lifetime of the process. When the user re-opens a show they've already
- * viewed, the seasons appear **instantly** (no spinner) and a background
- * refresh silently updates them if TMDB changed. The first-ever open of a
- * show still needs one fetch, but subsequent opens are as fast as tapping a
- * movie.
+ * ## Speed: in-memory caches
+ * Season lists AND episode lists are cached process-wide so re-opening a
+ * show or re-selecting a season is instant.
  */
 class SeasonEpisodeViewModel : ViewModel() {
 
     private val repo = ContentRepository()
 
-    /**
-     * Process-wide cache: TMDB tv id -> season list. Survives across picker
-     * opens (and across view-model recreation, since it lives on the
-     * companion) so re-opening a show is instant. This is the single biggest
-     * win for "shows load as fast as movies".
-     */
     private val _seasons = MutableStateFlow<List<TvSeason>>(emptyList())
-    val seasons: StateFlow<List<TvSeason>> = _seasons
+    val seasons: StateFlow<List<TvSeason>> = _seasons.asStateFlow()
 
     private val _selectedSeason = MutableStateFlow(1)
-    val selectedSeason: StateFlow<Int> = _selectedSeason
+    val selectedSeason: StateFlow<Int> = _selectedSeason.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
-    val isLoading: StateFlow<Boolean> = _isLoading
+    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    /** Full show detail (overview, backdrop, genres, runtime) for the hero. */
+    private val _showDetail = MutableStateFlow<TvShowDetail?>(null)
+    val showDetail: StateFlow<TvShowDetail?> = _showDetail.asStateFlow()
+
+    /** Episodes for the selected season, each with still + overview. */
+    private val _episodes = MutableStateFlow<List<TvEpisode>>(emptyList())
+    val episodes: StateFlow<List<TvEpisode>> = _episodes.asStateFlow()
+
+    private val _isLoadingEpisodes = MutableStateFlow(false)
+    val isLoadingEpisodes: StateFlow<Boolean> = _isLoadingEpisodes.asStateFlow()
+
+    /** "More Like This" row for the show. */
+    private val _similar = MutableStateFlow<List<TmdbItem>>(emptyList())
+    val similar: StateFlow<List<TmdbItem>> = _similar.asStateFlow()
 
     /**
      * True when the current seasons came from the cache (so the UI knows it
@@ -54,13 +63,12 @@ class SeasonEpisodeViewModel : ViewModel() {
      * first-time fetch, not a background refresh).
      */
     private val _fromCache = MutableStateFlow(false)
-    val fromCache: StateFlow<Boolean> = _fromCache
+    val fromCache: StateFlow<Boolean> = _fromCache.asStateFlow()
 
     private var loadedTvId: Int? = null
 
     fun load(tvId: Int) {
-        // If we're already showing data for this exact show, do nothing
-        // (e.g. recomposition). Avoids a redundant fetch + spinner flash.
+        // If we're already showing data for this exact show, do nothing.
         if (loadedTvId == tvId && _seasons.value.isNotEmpty()) return
 
         // Instant path: serve cached seasons immediately and refresh quietly.
@@ -70,14 +78,16 @@ class SeasonEpisodeViewModel : ViewModel() {
             _selectedSeason.value = cached.firstOrNull()?.seasonNumber ?: 1
             _fromCache.value = true
             loadedTvId = tvId
-            // Background refresh — no spinner, just update if data changed.
+            // Background refresh — no spinner.
             fetchSeasons(tvId, showLoading = false)
+            fetchShowDetail(tvId)
             return
         }
 
         // First-ever open of this show: show the spinner while we fetch.
         _fromCache.value = false
         fetchSeasons(tvId, showLoading = true)
+        fetchShowDetail(tvId)
     }
 
     private fun fetchSeasons(tvId: Int, showLoading: Boolean) {
@@ -88,20 +98,19 @@ class SeasonEpisodeViewModel : ViewModel() {
                 // Skip season 0 (specials) unless it's the only one.
                 val all = details?.seasons ?: emptyList()
                 val filtered = all.filter { it.seasonNumber > 0 }.ifEmpty { all }
-                // Only commit if this fetch is still the current show (the
-                // user may have backed out and opened a different show).
                 if (loadedTvId == null || loadedTvId == tvId) {
                     _seasons.value = filtered
                     seasonCache[tvId] = filtered
                     loadedTvId = tvId
-                    // Don't override a user-selected season on a background
-                    // refresh; only reset it on a first load.
                     if (_selectedSeason.value !in filtered.map { it.seasonNumber }) {
                         _selectedSeason.value = filtered.firstOrNull()?.seasonNumber ?: 1
                     }
+                    // Load episodes for the selected season immediately.
+                    if (filtered.isNotEmpty()) {
+                        loadEpisodes(tvId, _selectedSeason.value)
+                    }
                 }
             } catch (e: Exception) {
-                // On a background refresh failure, keep whatever is shown.
                 if (showLoading) _seasons.value = emptyList()
             } finally {
                 if (showLoading) _isLoading.value = false
@@ -109,13 +118,58 @@ class SeasonEpisodeViewModel : ViewModel() {
         }
     }
 
-    fun selectSeason(seasonNumber: Int) {
+    /** Fetch the full show detail (overview, backdrop, genres) for the hero. */
+    private fun fetchShowDetail(tvId: Int) {
+        viewModelScope.launch {
+            try {
+                val detail = repo.getTvShowDetail(tvId)
+                _showDetail.value = detail
+                // "More Like This"
+                val genres = detail?.genreIds ?: emptyList()
+                if (genres.isNotEmpty()) {
+                    _similar.value = repo.getSimilarTV(genres, tvId)
+                }
+            } catch (e: Exception) {
+                // Non-fatal — the hero falls back to the lightweight item.
+            }
+        }
+    }
+
+    /** Switch the selected season and fetch its episode list. */
+    fun selectSeason(tvId: Int, seasonNumber: Int) {
+        if (_selectedSeason.value == seasonNumber && _episodes.value.isNotEmpty()) return
         _selectedSeason.value = seasonNumber
+        loadEpisodes(tvId, seasonNumber)
+    }
+
+    private fun loadEpisodes(tvId: Int, seasonNumber: Int) {
+        val cacheKey = tvId to seasonNumber
+        episodeCache[cacheKey]?.let { cached ->
+            _episodes.value = cached
+            return
+        }
+        _isLoadingEpisodes.value = true
+        viewModelScope.launch {
+            try {
+                val seasonDetail = repo.getSeasonDetail(tvId, seasonNumber)
+                val eps = seasonDetail?.episodes ?: emptyList()
+                episodeCache[cacheKey] = eps
+                if (_selectedSeason.value == seasonNumber) {
+                    _episodes.value = eps
+                }
+            } catch (e: Exception) {
+                if (_selectedSeason.value == seasonNumber) {
+                    _episodes.value = emptyList()
+                }
+            } finally {
+                _isLoadingEpisodes.value = false
+            }
+        }
     }
 
     companion object {
-        // Lives on the companion so it outlives a single ViewModel instance
-        // (ViewModels are scoped to the picker, which is destroyed on back).
         private val seasonCache = mutableMapOf<Int, List<TvSeason>>()
+        // (tvId, seasonNumber) -> episode list with stills + overviews.
+        private val episodeCache = mutableMapOf<Pair<Int, Int>, List<TvEpisode>>()
     }
 }

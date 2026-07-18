@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.ui.browse.BrowseScreen
+import com.mariocart.app.ui.detail.DetailScreen
 import com.mariocart.app.ui.home.HomeScreen
 import com.mariocart.app.ui.movies.MoviesScreen
 import com.mariocart.app.ui.player.PlayerActivity
@@ -106,6 +107,7 @@ private fun AppRoot() {
     val dims = responsiveDims()
     var currentTab by remember { mutableStateOf(Tab.Home) }
     var showSearch by remember { mutableStateOf(false) }
+    var selectedMovie by remember { mutableStateOf<TmdbItem?>(null) }
     var selectedTv by remember { mutableStateOf<TmdbItem?>(null) }
     var searchGenre by remember { mutableStateOf<String?>(null) }
 
@@ -141,11 +143,24 @@ private fun AppRoot() {
         context.startActivity(intent)
     }
 
-    val onItemClick: (TmdbItem) -> Unit = { item ->
-        if (item.isMovie) {
-            launchMovie(item)
-        } else {
-            selectedTv = item
+    // ── Item-open router ───────────────────────────────────────────────
+    // Movies → Netflix-style DetailScreen (Play button launches the player).
+    // TV shows → Netflix-style SeasonEpisodePicker (detail hero + episodes).
+    // This is a stable, remembered lambda so the screen tree below it does
+    // NOT recompose every time AppRoot re-renders (scroll perf).
+    val onItemClick: (TmdbItem) -> Unit = remember {
+        { item ->
+            if (item.isMovie) selectedMovie = item
+            else selectedTv = item
+        }
+    }
+
+    // Stable search-with-genre callback (passed into the always-visible main
+    // screen tree — kept stable for the same scroll-perf reason).
+    val onSearchWithGenre: (String) -> Unit = remember {
+        { genreId ->
+            searchGenre = genreId
+            showSearch = true
         }
     }
 
@@ -162,12 +177,24 @@ private fun AppRoot() {
         return
     }
 
-    // ── Season / episode picker overlay ──
+    // ── Movie detail overlay (Netflix-style DetailScreen) ──
+    selectedMovie?.let { movie ->
+        DetailScreen(
+            item = movie,
+            onPlayMovie = { launchMovie(it) },
+            onBack = { selectedMovie = null },
+            onItemOpen = onItemClick
+        )
+        return
+    }
+
+    // ── Season / episode picker overlay (TV detail hero + episodes) ──
     selectedTv?.let { tv ->
         SeasonEpisodePicker(
             item = tv,
             onPlay = { season, episode -> launchTv(tv, season, episode) },
-            onBack = { selectedTv = null }
+            onBack = { selectedTv = null },
+            onItemOpen = onItemClick
         )
         return
     }
@@ -185,10 +212,7 @@ private fun AppRoot() {
                 NetflixScreenSwitch(
                     currentTab = currentTab,
                     onItemClick = onItemClick,
-                    onSearchWithGenre = { genreId ->
-                        searchGenre = genreId
-                        showSearch = true
-                    }
+                    onSearchWithGenre = onSearchWithGenre
                 )
             }
         }
@@ -198,10 +222,7 @@ private fun AppRoot() {
             NetflixScreenSwitch(
                 currentTab = currentTab,
                 onItemClick = onItemClick,
-                onSearchWithGenre = { genreId ->
-                    searchGenre = genreId
-                    showSearch = true
-                }
+                onSearchWithGenre = onSearchWithGenre
             )
             NetflixTopBar(
                 currentTab = currentTab,

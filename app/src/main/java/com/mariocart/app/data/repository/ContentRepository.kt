@@ -2,10 +2,13 @@ package com.mariocart.app.data.repository
 
 import com.mariocart.app.BuildConfig
 import com.mariocart.app.data.api.ApiClient
+import com.mariocart.app.data.model.MovieDetail
 import com.mariocart.app.data.model.StreamingServer
 import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.data.model.TmdbResponse
+import com.mariocart.app.data.model.TvSeasonDetail
 import com.mariocart.app.data.model.TvSeasonsResponse
+import com.mariocart.app.data.model.TvShowDetail
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -130,6 +133,63 @@ class ContentRepository {
 
     suspend fun getTvDetails(tvId: Int): TvSeasonsResponse? =
         runCatching { api.getTvDetails(tvId, key) }.getOrNull()
+
+    /**
+     * Fetches full details for a single movie (runtime, full overview, genres,
+     * tagline) from TMDB's `movie/{id}` endpoint. Used by the Netflix-style
+     * movie detail screen. Returns null on any network/parse failure so the
+     * caller can fall back to the lightweight [TmdbItem] it already has.
+     */
+    suspend fun getMovieDetail(movieId: Int): MovieDetail? =
+        runCatching { api.getMovieDetail(movieId, key) }.getOrNull()
+
+    /**
+     * Fetches full TV show details (overview, genres, seasons, episode
+     * runtime, number of seasons/episodes) from TMDB's `tv/{id}` endpoint.
+     * Used by the Netflix-style TV detail screen. Returns null on failure.
+     */
+    suspend fun getTvShowDetail(tvId: Int): TvShowDetail? =
+        runCatching { api.getTvShowDetail(tvId, key) }.getOrNull()
+
+    /**
+     * Fetches the full episode list for a season — each episode has its
+     * thumbnail (still_path), overview, name, and runtime. This is what
+     * powers the Netflix-style episode list where each episode button is
+     * its thumbnail with the description below it. Returns null on failure.
+     */
+    suspend fun getSeasonDetail(tvId: Int, seasonNumber: Int): TvSeasonDetail? =
+        runCatching { api.getSeasonDetail(tvId, seasonNumber, key) }.getOrNull()
+
+    /**
+     * Fetches a "More Like This" row for a movie using TMDB's discover endpoint
+     * sorted by popularity, scoped to the same genres. This mirrors Netflix's
+     * "More Like This" / "More Details" rail on the title detail page.
+     */
+    suspend fun getSimilarMovies(genreIds: List<Int>, excludeId: Int, page: Int = 1): List<TmdbItem> =
+        runCatching {
+            val genreQuery = genreIds.take(2).joinToString(",")
+            val items = filterEnglish(
+                api.discover("movie", key, genreId = genreQuery, sortBy = "popularity.desc", page = page).results
+            )
+            filterValidMovies(filterReleased(filterAdult(items)))
+                .filter { it.id != excludeId }
+                .take(18)
+        }.getOrDefault(emptyList())
+
+    /**
+     * Fetches a "More Like This" row for a TV show — discover/tv scoped to
+     * the show's genres, sorted by popularity. Mirrors the movie version.
+     */
+    suspend fun getSimilarTV(genreIds: List<Int>, excludeId: Int, page: Int = 1): List<TmdbItem> =
+        runCatching {
+            val genreQuery = genreIds.take(2).joinToString(",")
+            val items = filterEnglish(
+                api.discover("tv", key, genreId = genreQuery, sortBy = "popularity.desc", page = page).results
+            )
+            filterReleased(filterAdult(items))
+                .filter { it.id != excludeId }
+                .take(18)
+        }.getOrDefault(emptyList())
 
     suspend fun discover(
         type: String,
