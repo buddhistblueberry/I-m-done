@@ -38,7 +38,7 @@ import java.util.concurrent.TimeUnit
  *     upstream API returns nothing without them).
  *
  *  2. **Server query (parallel)** — for each of the 10 LordFlix servers,
- *     build a URL to `https://snowhouse.lordflix.club/?title=…&type={movie|series}
+ *     build a URL to `https://hongkong.lordflix.club/?title=…&type={movie|series}
  *     &year=…&imdb=…&tmdb=…&server={name}[&season=…&episode=…]`.
  *
  *  3. **Sign** — `GET https://enc-dec.app/api/enc-lordflix?url={encodedServerUrl}`
@@ -66,7 +66,7 @@ object LordFlixExtractor {
 
     private const val TAG = "LordFlix"
 
-    private const val LORDFLIX_API = "https://snowhouse.lordflix.club"
+    private const val LORDFLIX_API = "https://hongkong.lordflix.club"
     private const val ENC_BRIDGE = "https://enc-dec.app/api/enc-lordflix"
     private const val DEC_BRIDGE = "https://enc-dec.app/api/dec-lordflix"
 
@@ -258,6 +258,9 @@ object LordFlixExtractor {
     /**
      * `GET https://enc-dec.app/api/enc-lordflix?url={encodedServerUrl}` →
      * `{ status:200, result:{ url, sign } }`.
+     *
+     * The proxy URL may reference a stale host (e.g. snowhouse.lordflix.club);
+     * we normalise it to the current live host.
      */
     private fun getSignedProxy(serverUrl: String): SignedProxy? {
         val encUrl = "$ENC_BRIDGE?url=${encodeQuote(serverUrl)}"
@@ -277,9 +280,15 @@ object LordFlixExtractor {
                 val json = JSONObject(body)
                 if (json.optInt("status") != 200) return null
                 val result = json.optJSONObject("result") ?: return null
-                val proxyUrl = result.optString("url").orEmpty()
+                var proxyUrl = result.optString("url").orEmpty()
                 val sign = result.optString("sign").orEmpty()
-                if (proxyUrl.isBlank() || sign.isBlank()) return null
+                if (proxyUrl.isBlank()) return null
+                // Normalise stale host references to the current live host.
+                if (proxyUrl.contains("snowhouse.lordflix.club")) {
+                    proxyUrl = proxyUrl.replace("snowhouse.lordflix.club", "hongkong.lordflix.club")
+                }
+                // sign may be empty for the current enc-lordflix endpoint;
+                // dec-lordflix accepts an empty sign field.
                 SignedProxy(proxyUrl, sign)
             }
         } catch (e: Exception) {
