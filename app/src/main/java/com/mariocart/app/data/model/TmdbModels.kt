@@ -142,3 +142,136 @@ data class ExternalIdsResponse(
 data class ExternalIds(
     @SerializedName("imdb_id") val imdbId: String? = null
 )
+
+// ──────────────────────────────────────────────────────────────────────────────
+//  TV season + episode detail models                                          //
+//  TMDB's `tv/{id}/season/{season_number}` endpoint returns a full episode     //
+//  list with per-episode stills (thumbnails), overviews, names, runtimes,     //
+//  and air dates — exactly what Netflix's episode list shows.                  //
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A single episode within a season, as returned by TMDB's
+ * `tv/{id}/season/{n}` endpoint. `stillPath` is the episode screenshot
+ * (thumbnail) that Netflix shows on each episode card; `overview` is the
+ * episode synopsis shown beneath it.
+ */
+data class TvEpisode(
+    val id: Int = 0,
+    val name: String? = null,
+    val overview: String? = null,
+    @SerializedName("episode_number") val episodeNumber: Int = 1,
+    @SerializedName("season_number") val seasonNumber: Int = 1,
+    @SerializedName("still_path") val stillPath: String? = null,
+    @SerializedName("runtime") val runtime: Int? = null,
+    @SerializedName("air_date") val airDate: String? = null,
+    @SerializedName("vote_average") val voteAverage: Double = 0.0
+) {
+    /** Episode screenshot URL — w300 is a small, fast thumbnail size. */
+    val stillUrl: String?
+        get() = stillPath?.let { "https://image.tmdb.org/t/p/w300$it" }
+
+    /** Formatted runtime like "48m" or empty. */
+    val runtimeText: String
+        get() = if (runtime != null && runtime > 0) "${runtime}m" else ""
+}
+
+/**
+ * Full season detail from `tv/{id}/season/{n}` — the episode list with
+ * per-episode metadata (stills + overviews) for the Netflix-style episode
+ * list.
+ */
+data class TvSeasonDetail(
+    val id: Int = 0,
+    val name: String? = null,
+    val overview: String? = null,
+    @SerializedName("season_number") val seasonNumber: Int = 1,
+    @SerializedName("episode_count") val episodeCount: Int = 0,
+    @SerializedName("episodes") val episodes: List<TvEpisode> = emptyList(),
+    @SerializedName("air_date") val airDate: String? = null
+)
+
+/**
+ * Full TV show detail from `tv/{id}` — used by the detail screen to show
+ * the show overview, genres, number of seasons, and episode runtime.
+ * Mirrors [TmdbItem] but with the richer fields TMDB returns from the
+ * detail endpoint (genres as objects, episode_run_time array, etc.).
+ */
+data class TvShowDetail(
+    val id: Int = 0,
+    val name: String? = null,
+    val overview: String? = null,
+    @SerializedName("backdrop_path") val backdropPath: String? = null,
+    @SerializedName("poster_path") val posterPath: String? = null,
+    @SerializedName("vote_average") val voteAverage: Double = 0.0,
+    @SerializedName("first_air_date") val firstAirDate: String? = null,
+    @SerializedName("number_of_seasons") val numberOfSeasons: Int = 0,
+    @SerializedName("number_of_episodes") val numberOfEpisodes: Int = 0,
+    @SerializedName("episode_run_time") val episodeRunTime: List<Int> = emptyList(),
+    val genres: List<TmdbGenre> = emptyList(),
+    val seasons: List<TvSeason> = emptyList(),
+    @SerializedName("original_language") val originalLanguage: String? = null,
+    val status: String? = null,
+    @SerializedName("media_type") val mediaType: String? = "tv"
+) {
+    val backdropUrl: String?
+        get() = backdropPath?.let { "https://image.tmdb.org/t/p/w780$it" }
+
+    val posterUrl: String?
+        get() = posterPath?.let { "https://image.tmdb.org/t/p/w185$it" }
+
+    val year: String get() = (firstAirDate ?: "").take(4)
+
+    val ratingText: String
+        get() = if (voteAverage > 0) String.format("%.1f", voteAverage) else ""
+
+    /** Typical episode runtime in minutes (first non-zero value). */
+    val runtimeText: String
+        get() = (episodeRunTime.firstOrNull { it > 0 }?.let { "${it}m" }) ?: ""
+
+    val genreIds: List<Int> get() = genres.map { it.id }
+}
+
+/** A genre object as returned by TMDB detail endpoints (id + name). */
+data class TmdbGenre(
+    val id: Int = 0,
+    val name: String? = null
+)
+
+/**
+ * Full movie detail from `movie/{id}` — richer than the list [TmdbItem]:
+ * includes genres (as objects), runtime, tagline, and status. We already
+ * have [TmdbItem] with runtime/overview but this gives us the genre objects
+ * for the "More Like This" row without an extra call.
+ */
+data class MovieDetail(
+    val id: Int = 0,
+    val title: String? = null,
+    val overview: String? = null,
+    val tagline: String? = null,
+    @SerializedName("backdrop_path") val backdropPath: String? = null,
+    @SerializedName("poster_path") val posterPath: String? = null,
+    @SerializedName("vote_average") val voteAverage: Double = 0.0,
+    @SerializedName("release_date") val releaseDate: String? = null,
+    val runtime: Int? = null,
+    val genres: List<TmdbGenre> = emptyList(),
+    @SerializedName("original_language") val originalLanguage: String? = null,
+    val status: String? = null,
+    @SerializedName("media_type") val mediaType: String? = "movie"
+) {
+    val backdropUrl: String?
+        get() = backdropPath?.let { "https://image.tmdb.org/t/p/w780$it" }
+
+    val posterUrl: String?
+        get() = posterPath?.let { "https://image.tmdb.org/t/p/w185$it" }
+
+    val year: String get() = (releaseDate ?: "").take(4)
+
+    val ratingText: String
+        get() = if (voteAverage > 0) String.format("%.1f", voteAverage) else ""
+
+    val runtimeText: String
+        get() = if (runtime != null && runtime > 0) "${runtime}m" else ""
+
+    val genreIds: List<Int> get() = genres.map { it.id }
+}

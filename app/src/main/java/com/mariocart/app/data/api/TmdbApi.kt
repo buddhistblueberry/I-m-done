@@ -1,9 +1,12 @@
 package com.mariocart.app.data.api
 
 import com.mariocart.app.data.model.ExternalIdsResponse
+import com.mariocart.app.data.model.MovieDetail
 import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.data.model.TmdbResponse
+import com.mariocart.app.data.model.TvSeasonDetail
 import com.mariocart.app.data.model.TvSeasonsResponse
+import com.mariocart.app.data.model.TvShowDetail
 import retrofit2.http.GET
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -114,6 +117,41 @@ interface TmdbApi {
         @Query("api_key") apiKey: String,
         @Query("language") language: String = "en-US"
     ): TmdbItem
+
+    // ── Rich detail endpoints (Netflix-style detail screen) ──────────────
+    // These return the full genre objects + extra fields (tagline, status,
+    // episode_run_time) so the detail screen can show a meta row and power
+    // the "More Like This" row without a second API round-trip.
+
+    /** Full movie detail with genres + tagline for the detail screen. */
+    @GET("movie/{movie_id}")
+    suspend fun getMovieDetail(
+        @Path("movie_id") movieId: Int,
+        @Query("api_key") apiKey: String,
+        @Query("language") language: String = "en-US"
+    ): MovieDetail
+
+    /** Full TV show detail with genres, seasons, episode runtime for the detail screen. */
+    @GET("tv/{tv_id}")
+    suspend fun getTvShowDetail(
+        @Path("tv_id") tvId: Int,
+        @Query("api_key") apiKey: String,
+        @Query("language") language: String = "en-US"
+    ): TvShowDetail
+
+    /**
+     * Full season detail — the episode list with per-episode stills
+     * (thumbnails) and overviews. This is what powers the Netflix-style
+     * episode list where each episode button is its thumbnail with the
+     * episode description below it.
+     */
+    @GET("tv/{tv_id}/season/{season_number}")
+    suspend fun getSeasonDetail(
+        @Path("tv_id") tvId: Int,
+        @Path("season_number") seasonNumber: Int,
+        @Query("api_key") apiKey: String,
+        @Query("language") language: String = "en-US"
+    ): TvSeasonDetail
 
     // ── External IDs ──────────────────────────────────────────────
     // Used by NoTorrentExtractor to map a TMDB id → IMDb id (ttXXXXXXX).

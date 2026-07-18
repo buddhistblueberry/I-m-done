@@ -304,6 +304,14 @@ fun PlayerScreen(
     // The name of the server that actually delivered the current stream.
     var deliveringServerName by remember { mutableStateOf<String?>(null) }
 
+    // ── Live playback state (drives pause-gated overlays) ── //
+    // The stream selector (ServerPickerOverlay) and the quality selector are
+    // only shown while the video is PAUSED — matching the request that they
+    // must not clutter playback. ExoPlayerView reports playWhenReady here so
+    // the parent composable can gate both overlays.
+    var isPlaying by remember { mutableStateOf(true) }
+    val isPaused = streamUrl != null && !isPlaying
+
     // Refresh the server list + selected id whenever the picker might open.
     LaunchedEffect(showServerPicker) {
         if (showServerPicker) {
@@ -924,6 +932,7 @@ fun PlayerScreen(
                     headers = streamHeaders,
                     posterUrl = posterUrl,
                     backdropUrl = backdropUrl,
+                    onPlayingChange = { playing -> isPlaying = playing },
                     onPlayerError = { isFatal ->
                         // ── Transient-error-aware ExoPlayer fallback ──
                         // ExoPlayer emits onPlayerError for BOTH fatal errors
@@ -1050,37 +1059,41 @@ fun PlayerScreen(
             }
         }
 
-        // ── Server picker overlay (always available) ── //
-        ServerPickerOverlay(
-            servers = availableServers.value,
-            selectedServerId = selectedServerId,
-            deliveringServerName = deliveringServerName,
-            expanded = showServerPicker,
-            onExpandChange = { showServerPicker = it },
-            onSelect = { id ->
-                ServerManager.setSelectedServerId(id)
-                selectedServerId = id
-                showServerPicker = false
-                // Re-trigger extraction with the newly selected server.
-                ServerManager.resetHealth()
-                streamUrl = null
-                deliveringServerName = null
-                error = null
-                infoMessage = null
-                // ── Server-selection ──
-                // In the no-WebView world there is one extraction lane: the
-                // all-servers parallel race. Whether the user picks "Auto"
-                // (id == null) or a specific server (id != null), we always
-                // re-fire the full race from STAGE_VIDSTORM. The race fires
-                // every extractor at once and ranks candidates English-first,
-                // so the user's specific pick (if it resolves) will be in the
-                // candidate queue; if it doesn't resolve, the next-best
-                // English candidate plays instead of dead-ending.
-                startStage = PlayerActivity.STAGE_VIDSTORM
-                isLoading = true
-                attempt++
-            }
-        )
+        // ── Server picker overlay — only while the video is PAUSED ── //
+        // The stream selector must not clutter active playback; it only
+        // appears when the user pauses the video (TV shows & movies alike).
+        if (isPaused) {
+            ServerPickerOverlay(
+                servers = availableServers.value,
+                selectedServerId = selectedServerId,
+                deliveringServerName = deliveringServerName,
+                expanded = showServerPicker,
+                onExpandChange = { showServerPicker = it },
+                onSelect = { id ->
+                    ServerManager.setSelectedServerId(id)
+                    selectedServerId = id
+                    showServerPicker = false
+                    // Re-trigger extraction with the newly selected server.
+                    ServerManager.resetHealth()
+                    streamUrl = null
+                    deliveringServerName = null
+                    error = null
+                    infoMessage = null
+                    // ── Server-selection ──
+                    // In the no-WebView world there is one extraction lane: the
+                    // all-servers parallel race. Whether the user picks "Auto"
+                    // (id == null) or a specific server (id != null), we always
+                    // re-fire the full race from STAGE_VIDSTORM. The race fires
+                    // every extractor at once and ranks candidates English-first,
+                    // so the user's specific pick (if it resolves) will be in the
+                    // candidate queue; if it doesn't resolve, the next-best
+                    // English candidate plays instead of dead-ending.
+                    startStage = PlayerActivity.STAGE_VIDSTORM
+                    isLoading = true
+                    attempt++
+                }
+            )
+        }
     }
 }
 
@@ -1313,6 +1326,7 @@ private fun ExoPlayerView(
     headers: Map<String, String>,
     posterUrl: String? = null,
     backdropUrl: String? = null,
+    onPlayingChange: (Boolean) -> Unit = {},
     onPlayerError: (isFatal: Boolean) -> Unit = {}
 ) {
     var player: ExoPlayer? by remember { mutableStateOf(null) }
@@ -1325,6 +1339,10 @@ private fun ExoPlayerView(
 
     // Track when the first frame has rendered so we can hide the thumbnail.
     var isReady by remember { mutableStateOf(false) }
+
+    // ── Live playing/paused state (quality selector is pause-gated) ──
+    var isPlaying by remember { mutableStateOf(true) }
+    val playChangeHandler = rememberUpdatedState(onPlayingChange)
 
     // ── In-player transient-error retry state ──
     // Transient errors (slow segment, network blip, HLS manifest re-load) are
@@ -1491,6 +1509,16 @@ private fun ExoPlayerView(
                                 }
                             }
 
+                            override fun onIsPlayingChanged(isPlayingChanged: Boolean) {
+                                // Report live play/pause so the parent can gate
+                                // the stream & quality selectors on PAUSE.
+                                isPlaying = isPlayingChanged
+                                playChangeHandler.value.invoke(isPlayingChanged)
+                                // If playback resumed, auto-close the quality
+                                // menu so it never lingers over playing video.
+                                if (isPlayingChanged) showQualityMenu = false
+                            }
+
                             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                                 // Tracks can become available after STATE_READY
                                 // for HLS — fire here too so the quality list
@@ -1577,8 +1605,11 @@ private fun ExoPlayerView(
         )
         } // end key(url)
 
-        // ── Quality picker overlay (drawn on top of the player) ──
-        if (availableQualities.isNotEmpty()) {
+        // ── Quality picker overlay — only while the video is PAUSED ──
+        // The quality selector must not appear over active playback; it only
+        // shows when the user pauses (TV shows & movies alike). This matches
+        // the same pause-gating as the stream selector above.
+        if (availableQualities.isNotEmpty() && !isPlaying) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
