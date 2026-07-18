@@ -292,15 +292,6 @@ private fun NetflixTopBar(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Netflix-style wordmark (red).
-                Text(
-                    text = "NETFLIX",
-                    color = Red,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 1.5.sp
-                )
-                Spacer(Modifier.width(24.dp))
                 // Inline nav tabs — Netflix shows these in the top bar.
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(20.dp),
@@ -386,14 +377,6 @@ private fun TvSideNav(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "NETFLIX",
-                color = Red,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 1.sp,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
             TvNavItem(
                 icon = Icons.Default.Search,
                 label = "Search",
