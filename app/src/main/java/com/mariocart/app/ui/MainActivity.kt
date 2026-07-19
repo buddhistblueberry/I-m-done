@@ -5,9 +5,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -50,9 +53,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -111,6 +121,12 @@ private fun AppRoot() {
     var selectedMovie by remember { mutableStateOf<TmdbItem?>(null) }
     var selectedTv by remember { mutableStateOf<TmdbItem?>(null) }
     var searchGenre by remember { mutableStateOf<String?>(null) }
+
+    // TV-only: the side rail is HIDDEN by default and only slides in when the
+    // user presses Left while already on the first card of a row. Selecting a
+    // nav item slides it back away so it never covers content while browsing.
+    var sideNavVisible by remember { mutableStateOf(false) }
+    val sideNavFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
         com.mariocart.app.ui.AutoUpdater.checkAndPrompt(context)
@@ -215,18 +231,66 @@ private fun AppRoot() {
 
     // ── Layout: TV uses a side navigation rail; phones use the Netflix top bar ──
     if (dims.isTv) {
-        Row(modifier = Modifier.fillMaxSize().background(Bg)) {
-            TvSideNav(
-                currentTab = currentTab,
-                onTabSelected = { currentTab = it },
-                onSearchClick = { showSearch = true },
-                dims = dims
-            )
-            Box(modifier = Modifier.weight(1f)) {
+        // The side rail is hidden by default. It slides in (overlapping the
+        // left edge of the content) only when the user presses Left while on
+        // the first card of a row — i.e. "at the beginning of a line". It
+        // slides back out as soon as a nav item is chosen, so it never gets
+        // in the way while scrolling through movies/shows.
+        Box(modifier = Modifier.fillMaxSize().background(Bg)) {
+            // When the side rail becomes visible, land D-pad focus on it so
+            // the user can immediately navigate the nav items.
+            LaunchedEffect(sideNavVisible) {
+                if (sideNavVisible) {
+                    kotlinx.coroutines.delay(120)
+                    runCatching { sideNavFocusRequester.requestFocus() }
+                }
+            }
+
+            // Content fills the full width; the rail overlays it when visible.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onKeyEvent { event ->
+                        // Reveal the side rail when the user presses Left and
+                        // it is currently hidden — i.e. "at the beginning of a
+                        // line". The LaunchedEffect above then moves focus
+                        // into the rail once it appears.
+                        if (!sideNavVisible &&
+                            event.type == KeyEventType.KeyUp &&
+                            event.key == Key.DirectionLeft
+                        ) {
+                            sideNavVisible = true
+                            true
+                        } else {
+                            false
+                        }
+                    }
+            ) {
                 NetflixScreenSwitch(
                     currentTab = currentTab,
                     onItemClick = onItemClick,
                     onSearchWithGenre = onSearchWithGenre
+                )
+            }
+
+            // Sliding side rail — overlays the content's left edge.
+            AnimatedVisibility(
+                visible = sideNavVisible,
+                enter = slideInHorizontally(animationSpec = tween(220)) { fullWidth -> -fullWidth },
+                exit = slideOutHorizontally(animationSpec = tween(220)) { fullWidth -> -fullWidth },
+                modifier = Modifier.align(Alignment.CenterStart)
+            ) {
+                TvSideNav(
+                    currentTab = currentTab,
+                    onTabSelected = {
+                        currentTab = it
+                        sideNavVisible = false
+                    },
+                    onSearchClick = {
+                        showSearch = true
+                        sideNavVisible = false
+                    },
+                    focusRequester = sideNavFocusRequester
                 )
             }
         }
@@ -375,7 +439,7 @@ private fun TvSideNav(
     currentTab: Tab,
     onTabSelected: (Tab) -> Unit,
     onSearchClick: () -> Unit,
-    dims: com.mariocart.app.ui.util.ResponsiveDims
+    focusRequester: FocusRequester? = null
 ) {
     Surface(
         color = Bg2,
@@ -391,11 +455,14 @@ private fun TvSideNav(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // The first item (Search) receives the shared focus requester so
+            // the rail grabs D-pad focus as soon as it slides in.
             TvNavItem(
                 icon = Icons.Default.Search,
                 label = "Search",
                 isSelected = false,
-                onClick = onSearchClick
+                onClick = onSearchClick,
+                focusRequester = focusRequester
             )
             Tab.entries.forEach { tab ->
                 TvNavItem(
@@ -414,7 +481,8 @@ private fun TvNavItem(
     icon: ImageVector,
     label: String,
     isSelected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    focusRequester: FocusRequester? = null
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
@@ -424,6 +492,7 @@ private fun TvNavItem(
     Column(
         modifier = Modifier
             .width(100.dp)
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .clip(RoundedCornerShape(10.dp))
             .background(if (highlight) Red.copy(alpha = 0.15f) else Color.Transparent)
             .then(

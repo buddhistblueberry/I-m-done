@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -61,6 +62,10 @@ fun UpdatesScreen() {
         modifier = Modifier
             .fillMaxSize()
             .background(Bg)
+            // focusGroup(): clamps D-pad focus inside the screen so Up from
+            // the first action button can't escape into empty space (nothing
+            // focused, user stranded on a no-pointer remote).
+            .focusGroup()
             .verticalScroll(rememberScrollState())
             .padding(start = 20.dp, end = 20.dp, bottom = 20.dp, top = dims.topContentPadding)
     ) {

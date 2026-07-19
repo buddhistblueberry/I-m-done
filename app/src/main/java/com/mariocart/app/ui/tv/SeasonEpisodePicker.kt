@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -118,7 +119,14 @@ fun SeasonEpisodePicker(
         ?: seasons.size.let { if (it > 0) it else null }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().background(Bg),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Bg)
+            // focusGroup(): clamps D-pad focus inside the show detail / episode
+            // picker so Up from the Play button / episode list can't escape
+            // into empty space (nothing focused, user stranded on a no-pointer
+            // remote).
+            .focusGroup(),
         contentPadding = PaddingValues(bottom = 64.dp)
     ) {
         // ── Backdrop hero with show detail ──────────────────────────────

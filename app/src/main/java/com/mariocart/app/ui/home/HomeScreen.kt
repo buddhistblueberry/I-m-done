@@ -4,6 +4,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -26,8 +27,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -76,7 +75,12 @@ fun HomeScreen(
     // moment Home appears so the user always knows where they are.
     val playFocusRequester = rememberInitialFocusRequester()
 
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
+    // focusGroup(): keeps D-pad focus clamped inside the screen's content.
+    // Without it, pressing Up from the hero / first row can move focus above
+    // the LazyColumn into empty space — nothing focused, user stranded on a
+    // no-pointer TV remote. focusGroup() makes the focusable children a single
+    // unit so Up stops at the top element and Down stops at the bottom.
+    LazyColumn(modifier = Modifier.fillMaxSize().focusGroup()) {
         item {
             HeroBanner(
                 items = heroItems,

@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +62,10 @@ fun BrowseScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
+            // focusGroup(): clamps D-pad focus inside the screen so Up from
+            // the first genre pill / first row can't escape into empty space
+            // (nothing focused, user stranded on a no-pointer remote).
+            .focusGroup()
             .padding(top = dims.topContentPadding)
     ) {
         item {

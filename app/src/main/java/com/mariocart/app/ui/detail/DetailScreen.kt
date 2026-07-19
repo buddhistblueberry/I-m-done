@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -111,7 +112,13 @@ fun DetailScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(Bg)) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                // focusGroup(): clamps D-pad focus inside the detail screen so
+                // Up from the Play button / similar items can't escape into
+                // empty space (nothing focused, user stranded on a no-pointer
+                // remote).
+                .focusGroup(),
             contentPadding = PaddingValues(bottom = 64.dp)
         ) {
             // ── Backdrop hero ────────────────────────────────────────────
