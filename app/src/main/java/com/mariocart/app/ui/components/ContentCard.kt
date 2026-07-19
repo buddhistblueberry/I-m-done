@@ -137,7 +137,7 @@ fun ContentCard(
                 onClick = onClick
             )
             .then(
-                if (isFocused) {
+                if (active) {
                     Modifier.border(3.dp, Red, RoundedCornerShape(6.dp))
                 } else {
                     Modifier
