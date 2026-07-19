@@ -1,40 +1,57 @@
 package com.mariocart.app.ui.components
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mariocart.app.data.model.TmdbItem
+import com.mariocart.app.ui.theme.Bg3
 import com.mariocart.app.ui.theme.Red
+import com.mariocart.app.ui.theme.TextMuted
 import com.mariocart.app.ui.theme.TextPrimary
+import com.mariocart.app.ui.util.ResponsiveDims
 import com.mariocart.app.ui.util.responsiveDims
 
 /**
  * Netflix-style content row.
  *
- * The row title is white, bold, and left-aligned. An "Explore All ›"
- * affordance sits on the right (Netflix uses "Explore All"). Cards are
- * spaced like Netflix's browse rows and use the focus-scale behaviour from
- * [ContentCard].
+ * The row title is white, bold, and left-aligned. Cards are spaced like
+ * Netflix's browse rows and use the focus-scale behaviour from [ContentCard].
+ *
+ * When [onLoadMore] is supplied, a "Load More ›" button is rendered as the
+ * LAST item inside the horizontal row (after all the cards) instead of
+ * floating next to the title. This keeps the top of the row clean and puts
+ * the affordance where the user naturally lands after scrolling to the end.
  */
 @Composable
 fun ContentRow(
@@ -43,7 +60,10 @@ fun ContentRow(
     items: List<TmdbItem>,
     onItemClick: (TmdbItem) -> Unit,
     onLoadMore: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** If provided, attached to the FIRST card so a screen can land D-pad
+     *  focus there when it appears (no-pointer TV boxes). */
+    firstCardFocusRequester: FocusRequester? = null
 ) {
     val dims = responsiveDims()
     val listState = rememberLazyListState()
@@ -54,38 +74,17 @@ fun ContentRow(
     }
 
     Column(modifier = modifier.padding(bottom = if (dims.isTv) 28.dp else 18.dp)) {
-        Row(
+        // Title only — the "Load More" affordance now lives at the END of the
+        // row (as the last item in the LazyRow), not next to the title.
+        Text(
+            text = "$emoji $title",
+            color = TextPrimary,
+            fontSize = if (dims.isTv) 22.sp else 18.sp,
+            fontWeight = FontWeight.Bold,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = dims.rowPadding, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "$emoji $title",
-                color = TextPrimary,
-                fontSize = if (dims.isTv) 22.sp else 18.sp,
-                fontWeight = FontWeight.Bold
-            )
-            if (onLoadMore != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = onLoadMore) {
-                        Text(
-                            "Explore All",
-                            color = Red,
-                            fontSize = if (dims.isTv) 15.sp else 13.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = Red,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-            }
-        }
+                .padding(horizontal = dims.rowPadding, vertical = 8.dp)
+        )
 
         LazyRow(
             state = listState,
@@ -106,9 +105,73 @@ fun ContentRow(
                 ContentCard(
                     item = item,
                     onClick = { onItemClick(item) },
-                    dims = dims
+                    dims = dims,
+                    focusRequester = if (idx == 0) firstCardFocusRequester else null
                 )
             }
+
+            // "Load More" tile — last item in the row. Matches a card's
+            // footprint so the row scrolls naturally to reveal it, and is
+            // fully D-pad focusable with the same red highlight as cards.
+            if (onLoadMore != null) {
+                item(key = "load_more") {
+                    LoadMoreButton(
+                        onClick = onLoadMore,
+                        dims = dims
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The "Load More ›" affordance rendered as the trailing item of a content
+ * row. It mirrors a [ContentCard]'s width and height so it lines up with the
+ * cards, and uses the red focus border so it's obvious on TV.
+ */
+@Composable
+private fun LoadMoreButton(
+    onClick: () -> Unit,
+    dims: ResponsiveDims
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+
+    Box(
+        modifier = Modifier
+            .width(dims.cardWidth)
+            .height(dims.cardHeight)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Bg3)
+            .then(
+                if (isFocused) {
+                    Modifier.border(3.dp, Red, RoundedCornerShape(6.dp))
+                } else {
+                    Modifier
+                }
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "Load More",
+                color = if (isFocused) Red else TextPrimary,
+                fontSize = if (dims.isTv) 16.sp else 14.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(4.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = "Load More",
+                tint = if (isFocused) Red else TextMuted,
+                modifier = Modifier.size(24.dp)
+            )
         }
     }
 }

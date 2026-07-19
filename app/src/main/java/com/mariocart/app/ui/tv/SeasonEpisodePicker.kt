@@ -39,6 +39,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -63,6 +66,7 @@ import com.mariocart.app.ui.theme.Red
 import com.mariocart.app.ui.theme.TextMuted
 import com.mariocart.app.ui.theme.TextPrimary
 import com.mariocart.app.ui.util.responsiveDims
+import com.mariocart.app.ui.util.rememberInitialFocusRequester
 
 /**
  * SeasonEpisodePicker — Netflix-style TV show detail + season/episode browser.
@@ -101,6 +105,10 @@ fun SeasonEpisodePicker(
 
     LaunchedEffect(item.id) { viewModel.load(item.id) }
 
+    // On a no-pointer TV box, land D-pad focus on the Play button when the
+    // show detail opens so the user always knows where they are.
+    val playFocusRequester = rememberInitialFocusRequester()
+
     // Resolve best-available detail fields (fall back to the list item).
     val backdropUrl = showDetail?.backdropUrl ?: item.backdropUrl
     val overview = showDetail?.overview ?: item.overview ?: ""
@@ -111,7 +119,14 @@ fun SeasonEpisodePicker(
         ?: seasons.size.let { if (it > 0) it else null }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().background(Bg),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Bg)
+            // focusGroup(): clamps D-pad focus inside the show detail / episode
+            // picker so Up from the Play button / episode list can't escape
+            // into empty space (nothing focused, user stranded on a no-pointer
+            // remote).
+            .focusGroup(),
         contentPadding = PaddingValues(bottom = 64.dp)
     ) {
         // ── Backdrop hero with show detail ──────────────────────────────
@@ -129,7 +144,8 @@ fun SeasonEpisodePicker(
                     val firstEp = episodes.firstOrNull()?.episodeNumber ?: 1
                     onPlay(selectedSeason, firstEp)
                 },
-                dims = dims
+                dims = dims,
+                playFocusRequester = playFocusRequester
             )
         }
 
@@ -235,7 +251,8 @@ private fun ShowDetailHero(
     overview: String,
     onBack: () -> Unit,
     onPlay: () -> Unit,
-    dims: com.mariocart.app.ui.util.ResponsiveDims
+    dims: com.mariocart.app.ui.util.ResponsiveDims,
+    playFocusRequester: FocusRequester? = null
 ) {
     val context = LocalContext.current
     val backdropRequest = remember(backdropUrl) {
@@ -343,7 +360,7 @@ private fun ShowDetailHero(
             }
 
             // Play button (white, Netflix-style)
-            PlayButton(onClick = onPlay, dims = dims)
+            PlayButton(onClick = onPlay, dims = dims, focusRequester = playFocusRequester)
 
             if (overview.isNotBlank()) {
                 Spacer(Modifier.height(16.dp))
@@ -362,7 +379,8 @@ private fun ShowDetailHero(
 @Composable
 private fun PlayButton(
     onClick: () -> Unit,
-    dims: com.mariocart.app.ui.util.ResponsiveDims
+    dims: com.mariocart.app.ui.util.ResponsiveDims,
+    focusRequester: FocusRequester? = null
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
@@ -375,6 +393,7 @@ private fun PlayButton(
     Row(
         modifier = Modifier
             .scale(scale)
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .clip(RoundedCornerShape(6.dp))
             .background(PlayWhite)
             .then(

@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -16,6 +17,7 @@ import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.ui.components.ContentRow
 import com.mariocart.app.ui.theme.TextPrimary
 import com.mariocart.app.ui.util.responsiveDims
+import com.mariocart.app.ui.util.rememberInitialFocusRequester
 
 @Composable
 fun TvScreen(
@@ -26,9 +28,20 @@ fun TvScreen(
     val topRated by viewModel.topRated.collectAsState()
     val dims = responsiveDims()
 
+    // On a no-pointer TV box, land D-pad focus on the first card of the first
+    // row so the user has a known starting point when they open TV Shows.
+    val firstCardFocusRequester = rememberInitialFocusRequester()
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
+            // focusGroup(): the row cards are the only focusables here.
+            // Without it, D-pad Up from the top row can move focus ABOVE the
+            // LazyColumn into empty space — nothing is focused, Enter does
+            // nothing, and the user is stranded on a no-pointer remote.
+            // focusGroup() makes the focusable children a single focus unit so
+            // Up clamps on the first row and Down clamps on the last.
+            .focusGroup()
             .padding(top = dims.topContentPadding)
     ) {
         item {
@@ -44,7 +57,8 @@ fun TvScreen(
             ContentRow(
                 title = "Popular Shows", emoji = "\uD83D\uDCFA",
                 items = popular, onItemClick = onItemClick,
-                onLoadMore = { viewModel.loadMore() }
+                onLoadMore = { viewModel.loadMore() },
+                firstCardFocusRequester = firstCardFocusRequester
             )
         }
         item {

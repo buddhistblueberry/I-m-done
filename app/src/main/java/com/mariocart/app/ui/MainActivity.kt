@@ -5,9 +5,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -50,9 +53,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -112,6 +122,12 @@ private fun AppRoot() {
     var selectedTv by remember { mutableStateOf<TmdbItem?>(null) }
     var searchGenre by remember { mutableStateOf<String?>(null) }
 
+    // TV-only: the side rail is HIDDEN by default and only slides in when the
+    // user presses Left while already on the first card of a row. Selecting a
+    // nav item slides it back away so it never covers content while browsing.
+    var sideNavVisible by remember { mutableStateOf(false) }
+    val sideNavFocusRequester = remember { FocusRequester() }
+
     LaunchedEffect(Unit) {
         com.mariocart.app.ui.AutoUpdater.checkAndPrompt(context)
     }
@@ -144,6 +160,48 @@ private fun AppRoot() {
         context.startActivity(intent)
     }
 
+    /**
+     * Launches the player at a saved resume position — used by the Continue
+     * Watching row. For TV shows the season/episode are looked up from the
+     * stored WatchProgress so the user lands on the exact episode they were
+     * watching, at the exact position. For movies it's a straight resume.
+     */
+    fun launchResume(item: TmdbItem, positionMs: Long) {
+        if (item.isMovie) {
+            val intent = PlayerActivity.newIntent(
+                context = context,
+                tmdbId = item.id,
+                contentType = "movie",
+                title = item.displayTitle,
+                year = item.year,
+                posterUrl = item.posterUrl,
+                backdropUrl = item.backdropUrl,
+                resumePositionMs = positionMs
+            )
+            context.startActivity(intent)
+        } else {
+            // TV: look up the stored season/episode so we resume the right
+            // episode (the Continue Watching card may represent S2 E5, etc.).
+            val wp = com.mariocart.app.data.repository.WatchProgressStore
+                .get("tv_${item.id}")
+            val season = wp?.season ?: 1
+            val episode = wp?.episode ?: 1
+            val intent = PlayerActivity.newIntent(
+                context = context,
+                tmdbId = item.id,
+                contentType = "tv",
+                season = season,
+                episode = episode,
+                title = item.displayTitle,
+                year = item.year,
+                posterUrl = item.posterUrl,
+                backdropUrl = item.backdropUrl,
+                resumePositionMs = positionMs
+            )
+            context.startActivity(intent)
+        }
+    }
+
     // ── Item-open router ───────────────────────────────────────────────
     // Movies → Netflix-style DetailScreen (Play button launches the player).
     // TV shows → Netflix-style SeasonEpisodePicker (detail hero + episodes).
@@ -156,6 +214,13 @@ private fun AppRoot() {
             if (item.isMovie) selectedMovie = item
             else selectedTv = item
         }
+    }
+
+    // ── Continue Watching resume handler ─────────────────────────── //
+    // Launches the player directly at the saved position (bypassing the
+    // detail screen) so a Continue Watching card resumes in one click.
+    val onResume: (TmdbItem, Long) -> Unit = remember {
+        { item, positionMs -> launchResume(item, positionMs) }
     }
 
     // Stable search-with-genre callback (passed into the always-visible main
@@ -177,6 +242,9 @@ private fun AppRoot() {
         showSearch = false
         searchGenre = null
     }
+    // TV: Back also dismisses the side rail (if visible) before anything else
+    // peels off, so a TV remote user is never stuck with the rail on screen.
+    BackHandler(enabled = sideNavVisible) { sideNavVisible = false }
 
     // ── Search overlay ──
     if (showSearch) {
@@ -215,18 +283,68 @@ private fun AppRoot() {
 
     // ── Layout: TV uses a side navigation rail; phones use the Netflix top bar ──
     if (dims.isTv) {
-        Row(modifier = Modifier.fillMaxSize().background(Bg)) {
-            TvSideNav(
-                currentTab = currentTab,
-                onTabSelected = { currentTab = it },
-                onSearchClick = { showSearch = true },
-                dims = dims
-            )
-            Box(modifier = Modifier.weight(1f)) {
+        // The side rail is hidden by default. It slides in (overlapping the
+        // left edge of the content) only when the user presses Left while on
+        // the first card of a row — i.e. "at the beginning of a line". It
+        // slides back out as soon as a nav item is chosen, so it never gets
+        // in the way while scrolling through movies/shows.
+        Box(modifier = Modifier.fillMaxSize().background(Bg)) {
+            // When the side rail becomes visible, land D-pad focus on it so
+            // the user can immediately navigate the nav items.
+            LaunchedEffect(sideNavVisible) {
+                if (sideNavVisible) {
+                    kotlinx.coroutines.delay(120)
+                    runCatching { sideNavFocusRequester.requestFocus() }
+                }
+            }
+
+            // Content fills the full width; the rail overlays it when visible.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onKeyEvent { event ->
+                        // Reveal the side rail when the user presses Left and
+                        // it is currently hidden — i.e. "at the beginning of a
+                        // line". The LaunchedEffect above then moves focus
+                        // into the rail once it appears.
+                        if (!sideNavVisible &&
+                            event.type == KeyEventType.KeyUp &&
+                            event.key == Key.DirectionLeft
+                        ) {
+                            sideNavVisible = true
+                            true
+                        } else {
+                            false
+                        }
+                    }
+            ) {
                 NetflixScreenSwitch(
                     currentTab = currentTab,
                     onItemClick = onItemClick,
-                    onSearchWithGenre = onSearchWithGenre
+                    onSearchWithGenre = onSearchWithGenre,
+                    onResume = onResume
+                )
+            }
+
+            // Sliding side rail — overlays the content's left edge.
+            AnimatedVisibility(
+                visible = sideNavVisible,
+                enter = slideInHorizontally(animationSpec = tween(220)) { fullWidth -> -fullWidth },
+                exit = slideOutHorizontally(animationSpec = tween(220)) { fullWidth -> -fullWidth },
+                modifier = Modifier.align(Alignment.CenterStart)
+            ) {
+                TvSideNav(
+                    currentTab = currentTab,
+                    onTabSelected = {
+                        currentTab = it
+                        sideNavVisible = false
+                    },
+                    onSearchClick = {
+                        showSearch = true
+                        sideNavVisible = false
+                    },
+                    onDismiss = { sideNavVisible = false },
+                    focusRequester = sideNavFocusRequester
                 )
             }
         }
@@ -236,7 +354,8 @@ private fun AppRoot() {
             NetflixScreenSwitch(
                 currentTab = currentTab,
                 onItemClick = onItemClick,
-                onSearchWithGenre = onSearchWithGenre
+                onSearchWithGenre = onSearchWithGenre,
+                onResume = onResume
             )
             NetflixTopBar(
                 currentTab = currentTab,
@@ -252,7 +371,8 @@ private fun AppRoot() {
 private fun NetflixScreenSwitch(
     currentTab: Tab,
     onItemClick: (TmdbItem) -> Unit,
-    onSearchWithGenre: (String) -> Unit
+    onSearchWithGenre: (String) -> Unit,
+    onResume: (TmdbItem, Long) -> Unit
 ) {
     AnimatedContent(
         targetState = currentTab,
@@ -264,7 +384,8 @@ private fun NetflixScreenSwitch(
         when (tab) {
             Tab.Home -> HomeScreen(
                 onItemClick = onItemClick,
-                onSearchWithGenre = onSearchWithGenre
+                onSearchWithGenre = onSearchWithGenre,
+                onResume = onResume
             )
             Tab.Movies -> MoviesScreen(onItemClick = onItemClick)
             Tab.TV -> TvScreen(onItemClick = onItemClick)
@@ -375,7 +496,8 @@ private fun TvSideNav(
     currentTab: Tab,
     onTabSelected: (Tab) -> Unit,
     onSearchClick: () -> Unit,
-    dims: com.mariocart.app.ui.util.ResponsiveDims
+    onDismiss: () -> Unit = {},
+    focusRequester: FocusRequester? = null
 ) {
     Surface(
         color = Bg2,
@@ -383,6 +505,15 @@ private fun TvSideNav(
         modifier = Modifier
             .fillMaxHeight()
             .width(120.dp)
+            // Pressing Right while focused inside the rail slides it back
+            // away (D-pad dismiss without having to pick an item). Back is
+            // handled by the BackHandler in AppRoot.
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp && event.key == Key.DirectionRight) {
+                    onDismiss()
+                    true
+                } else false
+            }
     ) {
         Column(
             modifier = Modifier
@@ -391,11 +522,14 @@ private fun TvSideNav(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // The first item (Search) receives the shared focus requester so
+            // the rail grabs D-pad focus as soon as it slides in.
             TvNavItem(
                 icon = Icons.Default.Search,
                 label = "Search",
                 isSelected = false,
-                onClick = onSearchClick
+                onClick = onSearchClick,
+                focusRequester = focusRequester
             )
             Tab.entries.forEach { tab ->
                 TvNavItem(
@@ -414,7 +548,8 @@ private fun TvNavItem(
     icon: ImageVector,
     label: String,
     isSelected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    focusRequester: FocusRequester? = null
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
@@ -424,6 +559,7 @@ private fun TvNavItem(
     Column(
         modifier = Modifier
             .width(100.dp)
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .clip(RoundedCornerShape(10.dp))
             .background(if (highlight) Red.copy(alpha = 0.15f) else Color.Transparent)
             .then(

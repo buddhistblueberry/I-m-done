@@ -41,7 +41,9 @@ import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.mariocart.app.data.cache.StreamAvailabilityCache
 import com.mariocart.app.data.engine.KodiEngine
+import com.mariocart.app.data.model.WatchProgress
 import com.mariocart.app.data.repository.ContentRepository
+import com.mariocart.app.data.repository.WatchProgressStore
 import com.mariocart.app.data.server.DahmerMoviesExtractor
 import com.mariocart.app.data.server.LordFlixExtractor
 import com.mariocart.app.data.server.MeowTvExtractor
@@ -172,7 +174,8 @@ class PlayerActivity : ComponentActivity() {
             title: String = "Now Playing",
             year: String? = null,
             posterUrl: String? = null,
-            backdropUrl: String? = null
+            backdropUrl: String? = null,
+            resumePositionMs: Long = 0L
         ): Intent = Intent(context, PlayerActivity::class.java).apply {
             putExtra("TMDB_ID", tmdbId)
             putExtra("CONTENT_TYPE", contentType)
@@ -182,6 +185,10 @@ class PlayerActivity : ComponentActivity() {
             putExtra("YEAR", year)
             posterUrl?.let { putExtra("POSTER_URL", it) }
             backdropUrl?.let { putExtra("BACKDROP_URL", it) }
+            // Resume position (ms) — when > 0 the player seeks here once
+            // STATE_READY fires, so a Continue Watching card picks up exactly
+            // where the user left off.
+            putExtra("RESUME_MS", resumePositionMs)
         }
 
         // ── Active-player bridge for Android TV remote controls ──────────── //
@@ -215,6 +222,18 @@ class PlayerActivity : ComponentActivity() {
      *  Android TV box / device never dims or goes to the idle/standby screen
      *  during a video. Acquired in onCreate, released in onDestroy. */
     private var wakeLock: PowerManager.WakeLock? = null
+
+    // -- Watch-progress metadata (captured in onCreate so onDestroy can flush
+    //    the final position to WatchProgressStore without needing the live
+    //    composable state). The live ExoPlayer is reached via activePlayer. */
+    private var progressTmdbId: Int = -1
+    private var progressContentType: String = "movie"
+    private var progressSeason: Int = 1
+    private var progressEpisode: Int = 1
+    private var progressTitle: String = ""
+    private var progressYear: String? = null
+    private var progressPosterPath: String? = null
+    private var progressBackdropPath: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -250,12 +269,25 @@ class PlayerActivity : ComponentActivity() {
         val year = intent.getStringExtra("YEAR")
         val posterUrl = intent.getStringExtra("POSTER_URL")
         val backdropUrl = intent.getStringExtra("BACKDROP_URL")
+        val resumePositionMs = intent.getLongExtra("RESUME_MS", 0L)
 
         if (tmdbId == -1) {
             Log.e(TAG, "Invalid TMDB ID")
             finish()
             return
         }
+
+        // Capture metadata for the onDestroy progress flush. The poster/backdrop
+        // are stored as TMDB-relative paths (strip the image base URL) so the
+        // Continue Watching card can rebuild any size it needs.
+        progressTmdbId = tmdbId
+        progressContentType = contentType
+        progressSeason = season
+        progressEpisode = episode
+        progressTitle = title
+        progressYear = year
+        progressPosterPath = posterUrl?.let { extractTmdbPath(it) }
+        progressBackdropPath = backdropUrl?.let { extractTmdbPath(it) }
 
         setContent {
             NetflixTheme {
@@ -267,7 +299,8 @@ class PlayerActivity : ComponentActivity() {
                     title = title,
                     year = year,
                     posterUrl = posterUrl,
-                    backdropUrl = backdropUrl
+                    backdropUrl = backdropUrl,
+                    resumePositionMs = resumePositionMs
                 )
             }
         }
@@ -363,6 +396,42 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // -- Final watch-progress flush ---------------------------------- //
+        // Save the last known position so the Continue Watching row can resume
+        // from here next time. We read the live player's position/duration;
+        // if the player is already gone (e.g. STATE_ENDED already marked it
+        // completed, or it was released) we skip — the periodic saver + the
+        // STATE_ENDED handler already captured the right state.
+        runCatching {
+            val player = activePlayer
+            if (player != null && progressTmdbId != -1) {
+                val duration = player.duration.coerceAtLeast(0L)
+                val position = player.currentPosition.coerceIn(0L, duration)
+                // Only flush if there's a real duration and the user watched
+                // at least a few seconds (avoid recording a tap-and-leave as
+                // progress).
+                if (duration > 0 && position > 3_000L) {
+                    val fraction = position.toFloat() / duration.toFloat()
+                    val completed = fraction >= 0.97f
+                    WatchProgressStore.upsert(
+                        WatchProgress(
+                            tmdbId = progressTmdbId,
+                            contentType = progressContentType,
+                            positionMs = position,
+                            durationMs = duration,
+                            season = progressSeason,
+                            episode = progressEpisode,
+                            title = progressTitle,
+                            year = progressYear,
+                            posterPath = progressPosterPath,
+                            backdropPath = progressBackdropPath,
+                            completed = completed
+                        )
+                    )
+                    Log.d(TAG, "onDestroy flushed progress: pos=${position}ms dur=${duration}ms completed=$completed")
+                }
+            }
+        }
         // Clear the active-player bridge so a stale reference is never driven.
         activePlayer = null
         // Release the wake lock so the device can return to normal idle
@@ -390,6 +459,26 @@ class PlayerActivity : ComponentActivity() {
  * The TMDB poster/backdrop is shown as a thumbnail while the stream is
  * being resolved and until ExoPlayer reports STATE_READY (playback begins).
  */
+
+/**
+ * Extracts the TMDB-relative image path from a full image URL.
+ *
+ * TMDB image URLs look like `https://image.tmdb.org/t/p/w185/abc.jpg`. The
+ * WatchProgress store keeps only the relative path (`/abc.jpg`) so the
+ * Continue Watching card can request any image size it needs. If the URL
+ * doesn't match the expected pattern the full string is returned (better than
+ * null — the card will still try to load it).
+ */
+private fun extractTmdbPath(url: String): String? {
+    val marker = "/t/p/"
+    val idx = url.indexOf(marker)
+    if (idx < 0) return null
+    val after = url.substring(idx + marker.length)
+    // Strip the size segment (e.g. "w185/", "w780/", "original/").
+    val slash = after.indexOf('/')
+    return if (slash >= 0) after.substring(slash) else after
+}
+
 @UnstableApi
 @Composable
 fun PlayerScreen(
@@ -400,7 +489,8 @@ fun PlayerScreen(
     title: String = "Now Playing",
     year: String? = null,
     posterUrl: String? = null,
-    backdropUrl: String? = null
+    backdropUrl: String? = null,
+    resumePositionMs: Long = 0L
 ) {
     val localContext = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1116,6 +1206,20 @@ fun PlayerScreen(
                     headers = streamHeaders,
                     posterUrl = posterUrl,
                     backdropUrl = backdropUrl,
+                    resumePositionMs = resumePositionMs,
+                    // Watch-progress metadata so ExoPlayerView can save
+                    // periodic position updates and mark the title completed
+                    // on STATE_ENDED. Poster/backdrop are stored as TMDB
+                    // relative paths (strip the base URL) so the Continue
+                    // Watching card can render any image size.
+                    progressTmdbId = tmdbId,
+                    progressContentType = contentType,
+                    progressSeason = currentSeason,
+                    progressEpisode = currentEpisode,
+                    progressTitle = title,
+                    progressYear = year,
+                    progressPosterPath = posterUrl?.let { extractTmdbPath(it) },
+                    progressBackdropPath = backdropUrl?.let { extractTmdbPath(it) },
                     onPlayingChange = { playing -> isPlaying = playing },
                     onEpisodeEnded = {
                         // ── Next-episode auto-play (TV shows only) ────────── //
@@ -1708,6 +1812,15 @@ private fun ExoPlayerView(
     headers: Map<String, String>,
     posterUrl: String? = null,
     backdropUrl: String? = null,
+    resumePositionMs: Long = 0L,
+    progressTmdbId: Int = -1,
+    progressContentType: String = "movie",
+    progressSeason: Int = 1,
+    progressEpisode: Int = 1,
+    progressTitle: String = "",
+    progressYear: String? = null,
+    progressPosterPath: String? = null,
+    progressBackdropPath: String? = null,
     onPlayingChange: (Boolean) -> Unit = {},
     onPlayerError: (isFatal: Boolean) -> Unit = {},
     onEpisodeEnded: () -> Unit = {}
@@ -1743,6 +1856,44 @@ private fun ExoPlayerView(
     // version. Fired when playback reaches STATE_ENDED so PlayerScreen can
     // auto-play the next TV episode (unless the user has left the player).
     val episodeEndedHandler = rememberUpdatedState(onEpisodeEnded)
+
+    // ── Periodic watch-progress saver ─────────────────────────────── //
+    // While the player is alive and actively playing, poll its position every
+    // 10 seconds and upsert a WatchProgress record. This is what makes the
+    // Continue Watching row reflect reality even if the user force-quits the
+    // app mid-video (the onDestroy flush covers graceful exits; this covers
+    // the gaps between flushes). The effect is keyed on the live player so it
+    // restarts when a new media item / server is loaded.
+    LaunchedEffect(player) {
+        val p = player ?: return@LaunchedEffect
+        while (true) {
+            kotlinx.coroutines.delay(10_000L)
+            try {
+                val duration = p.duration.coerceAtLeast(0L)
+                val position = p.currentPosition.coerceIn(0L, duration)
+                if (duration > 0 && position > 3_000L && progressTmdbId != -1) {
+                    val fraction = position.toFloat() / duration.toFloat()
+                    WatchProgressStore.upsert(
+                        WatchProgress(
+                            tmdbId = progressTmdbId,
+                            contentType = progressContentType,
+                            positionMs = position,
+                            durationMs = duration,
+                            season = progressSeason,
+                            episode = progressEpisode,
+                            title = progressTitle,
+                            year = progressYear,
+                            posterPath = progressPosterPath,
+                            backdropPath = progressBackdropPath,
+                            completed = fraction >= 0.97f
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                // Player may be released mid-poll — ignore.
+            }
+        }
+    }
 
     // ── Reset ready + retry state whenever the URL changes (server switch) ──
     // When the player falls through to the next server, a NEW url arrives.
@@ -1806,6 +1957,11 @@ private fun ExoPlayerView(
         // out and switched again. Keying on url guarantees a fresh ExoPlayer +
         // PlayerView + surface for every source. ──
         androidx.compose.runtime.key(url) {
+        // Resets to false for every new media source (the key(url) block
+        // re-creates everything inside it). Ensures the resume seek only
+        // fires once per source, not on every STATE_READY (e.g. after a
+        // transient-error re-prepare).
+        var resumedForThisMedia by remember { mutableStateOf(false) }
         AndroidView(
             factory = { ctx ->
                 val userAgent = headers["User-Agent"] ?: DEFAULT_UA
@@ -1895,7 +2051,50 @@ private fun ExoPlayerView(
                                     // gets a fresh allowance of retries.
                                     transientRetryCount = 0
                                     populateQualities(this@apply) { q -> availableQualities = q }
+                                    // ── Resume from saved position ────────── //
+                                    // If the player was launched from a
+                                    // Continue Watching card (resumePositionMs
+                                    // > 0) and the media has a real duration,
+                                    // seek to the saved position now — but
+                                    // only once per media item. This picks up
+                                    // exactly where the user left off, just
+                                    // like Netflix's "Resume" behaviour.
+                                    if (resumePositionMs > 0 && !resumedForThisMedia) {
+                                        val dur = this@apply.duration
+                                        if (dur > 0 && resumePositionMs < dur - 1_000L) {
+                                            runCatching { this@apply.seekTo(resumePositionMs) }
+                                            Log.d("ExoPlayer", "Resumed to ${resumePositionMs}ms / $dur ms")
+                                        }
+                                        resumedForThisMedia = true
+                                    }
                                 } else if (state == Player.STATE_ENDED) {
+                                    // ── Mark title completed (Continue Watching) ── //
+                                    // The title finished naturally. Record it
+                                    // as completed so it drops out of the
+                                    // Continue Watching row (the user finished
+                                    // it → it no longer belongs there). The
+                                    // record is kept on disk so the
+                                    // recommendation engine can still learn
+                                    // from it.
+                                    if (progressTmdbId != -1) {
+                                        val dur = this@apply.duration.coerceAtLeast(0L)
+                                        WatchProgressStore.upsert(
+                                            WatchProgress(
+                                                tmdbId = progressTmdbId,
+                                                contentType = progressContentType,
+                                                positionMs = dur,
+                                                durationMs = dur,
+                                                season = progressSeason,
+                                                episode = progressEpisode,
+                                                title = progressTitle,
+                                                year = progressYear,
+                                                posterPath = progressPosterPath,
+                                                backdropPath = progressBackdropPath,
+                                                completed = true
+                                            )
+                                        )
+                                        Log.d("ExoPlayer", "Marked completed: ${progressContentType}_$progressTmdbId")
+                                    }
                                     // The episode/movie finished playing
                                     // naturally (reached the end). Notify the
                                     // parent so it can auto-play the next TV

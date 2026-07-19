@@ -30,12 +30,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -51,6 +60,7 @@ import com.mariocart.app.ui.theme.Bg
 import com.mariocart.app.ui.theme.Red
 import com.mariocart.app.ui.theme.TextMuted
 import com.mariocart.app.ui.util.responsiveDims
+import com.mariocart.app.ui.util.rememberInitialFocusRequester
 
 @Composable
 fun SearchScreen(
@@ -66,6 +76,32 @@ fun SearchScreen(
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
 
+    // On a no-pointer TV box, land D-pad focus in the search field when the
+    // screen opens so the user can start typing right away.
+    val searchFieldFocusRequester = rememberInitialFocusRequester()
+    // Focus target for the first result card — used after the user presses
+    // Done/Enter on the keypad so they can immediately D-pad to a movie.
+    val firstResultFocusRequester = remember { FocusRequester() }
+    // Flipped true when the user "commits" the search (presses Enter / Done /
+    // D-pad-center). While true, a LaunchedEffect below watches for results
+    // and moves focus to the first one — this handles the debounce timing so
+    // the user is never left stranded with nothing focused if they press Enter
+    // before the 700ms debounce has populated the grid.
+    var searchCommitted by remember { mutableStateOf(false) }
+
+    // When the user commits the search, land focus on the first result card
+    // the moment results are available (they may already be on screen from the
+    // auto-search-while-typing, or they may arrive a beat later after the
+    // debounce). This guarantees Enter always closes the keypad AND gives the
+    // user a focused card to D-pad through.
+    LaunchedEffect(searchCommitted, results) {
+        if (searchCommitted && results.isNotEmpty()) {
+            searchCommitted = false
+            kotlinx.coroutines.delay(60)
+            runCatching { firstResultFocusRequester.requestFocus() }
+        }
+    }
+
     LaunchedEffect(initialGenre) {
         if (initialGenre != null) {
             viewModel.setInitialGenre(initialGenre)
@@ -76,6 +112,10 @@ fun SearchScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Bg)
+            // focusGroup(): clamps D-pad focus inside the search screen so Up
+            // from the search field / first result can't escape into empty
+            // space (nothing focused, user stranded on a no-pointer remote).
+            .focusGroup()
             .padding(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -101,14 +141,37 @@ fun SearchScreen(
             placeholder = { Text("Search movies or TV shows...", color = TextMuted) },
             leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = {
-                // Pressing Enter / Done on the remote keyboard hides it so
-                // the user can D-pad through the results grid.
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = {
+                // Pressing the search action key on a soft keyboard hides it
+                // so the user can D-pad through the results grid. The actual
+                // focus hand-off to the first result is handled by the
+                // searchCommitted flag + LaunchedEffect above (robust against
+                // the debounce timing).
                 keyboard?.hide()
-                focusManager.clearFocus()
+                searchCommitted = true
             }),
-            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(searchFieldFocusRequester)
+                // onKeyEvent catches Enter / D-pad-center / NumPadEnter even
+                // when the TV Leanback IME doesn't fire the IME Done action
+                // (a common failure on Android TV boxes). KeyboardActions
+                // alone is unreliable here, so this is the guaranteed path:
+                // it hides the on-screen keypad and hands focus to the
+                // results grid.
+                .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyUp &&
+                        (event.key == Key.Enter ||
+                            event.key == Key.NumPadEnter ||
+                            event.key == Key.DirectionCenter)) {
+                        keyboard?.hide()
+                        focusManager.clearFocus()
+                        searchCommitted = true
+                        true
+                    } else false
+                }
+                .padding(vertical = 12.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Red,
                 unfocusedBorderColor = TextMuted,
@@ -137,7 +200,13 @@ fun SearchScreen(
                     items = results,
                     key = { item -> "${item.id}_${item.contentType}" }
                 ) { item ->
-                    ContentCard(item = item, onClick = { onItemClick(item) }, dims = dims)
+                    ContentCard(
+                        item = item,
+                        onClick = { onItemClick(item) },
+                        dims = dims,
+                        fillMaxWidth = true,
+                        focusRequester = if (item === results.first()) firstResultFocusRequester else null
+                    )
                 }
             }
         } else if (query.length >= 2) {
