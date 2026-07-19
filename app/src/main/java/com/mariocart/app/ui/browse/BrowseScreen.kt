@@ -1,32 +1,41 @@
 package com.mariocart.app.ui.browse
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -40,6 +49,7 @@ import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.ui.components.ContentCard
 import com.mariocart.app.ui.theme.Bg3
 import com.mariocart.app.ui.theme.Red
+import com.mariocart.app.ui.theme.TextMuted
 import com.mariocart.app.ui.theme.TextPrimary
 import com.mariocart.app.ui.util.responsiveDims
 import com.mariocart.app.ui.util.rememberInitialFocusRequester
@@ -59,28 +69,43 @@ fun BrowseScreen(
     // user has a known starting point when they open Browse.
     val firstGenreFocusRequester = rememberInitialFocusRequester()
 
-    LazyColumn(
+    // A single LazyVerticalGrid hosts the title, the genre selector, the
+    // loading state, and the content cards. Headers / footers span the full
+    // grid width via GridItemSpan(maxLineSpan) so they read as normal rows,
+    // while the cards flow into dims.gridColumns columns (3 on phone, 5 on TV).
+    //
+    // focusGroup(): clamps D-pad focus inside the screen so Up from the first
+    // genre pill / first card can't escape into empty space (nothing focused,
+    // user stranded on a no-pointer remote).
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(dims.gridColumns),
         modifier = Modifier
             .fillMaxSize()
-            // focusGroup(): clamps D-pad focus inside the screen so Up from
-            // the first genre pill / first row can't escape into empty space
-            // (nothing focused, user stranded on a no-pointer remote).
             .focusGroup()
-            .padding(top = dims.topContentPadding)
+            .padding(top = dims.topContentPadding),
+        contentPadding = PaddingValues(
+            start = dims.rowPadding,
+            end = dims.rowPadding,
+            bottom = 24.dp
+        ),
+        horizontalArrangement = Arrangement.spacedBy(dims.cardSpacing),
+        verticalArrangement = Arrangement.spacedBy(dims.cardSpacing)
     ) {
-        item {
+        // ── Title (full width) ──────────────────────────────────────────
+        item(span = { GridItemSpan(dims.gridColumns) }) {
             Text(
                 text = "\uD83D\uDDC2\uFE0F Browse by Genre",
                 color = TextPrimary,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                modifier = Modifier.padding(vertical = 8.dp)
             )
         }
 
-        item {
+        // ── Genre selector (full width) ─────────────────────────────────
+        item(span = { GridItemSpan(dims.gridColumns) }) {
             LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.padding(bottom = 16.dp)
             ) {
@@ -100,8 +125,11 @@ fun BrowseScreen(
             }
         }
 
-        if (isLoading) {
-            item {
+        // Initial load only: full-screen spinner when there are no items yet.
+        // Once items are on screen we keep them visible and reflect an in-flight
+        // loadMore() on the "Show More" button, so pressing it never wipes the grid.
+        if (isLoading && items.isEmpty()) {
+            item(span = { GridItemSpan(dims.gridColumns) }) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -111,41 +139,96 @@ fun BrowseScreen(
                     CircularProgressIndicator(color = Red, modifier = Modifier.size(36.dp))
                 }
             }
-        } else {
-            // Display items in a grid-like manner using rows
-            val chunked = items.chunked(3)
-            items(chunked.size) { rowIndex ->
-                val rowItems = chunked[rowIndex]
-                androidx.compose.foundation.layout.Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    rowItems.forEach { item ->
-                        ContentCard(
-                            item = item,
-                            onClick = { onItemClick(item) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    // Fill remaining space if row isn't full
-                    repeat(3 - rowItems.size) {
-                        Box(modifier = Modifier.weight(1f))
-                    }
-                }
-            }
+        }
 
-            if (items.isNotEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        TextButton(onClick = { viewModel.loadMore() }) {
-                            Text("Load More", color = Red)
-                        }
+        // Content cards - always rendered when there are items, regardless of
+        // isLoading, so a loadMore() in progress doesn't blank out what's shown.
+        items(
+            items = items,
+            key = { "${it.id}_${it.contentType}" }
+        ) { item ->
+            ContentCard(
+                item = item,
+                onClick = { onItemClick(item) },
+                fillMaxWidth = true
+            )
+        }
+
+        // "Show More" footer - shown whenever there are cards. While a loadMore()
+        // is in flight the button shows a spinner and is disabled; otherwise it's
+        // a fully D-pad-focusable button with the app's red focus ring.
+        if (items.isNotEmpty()) {
+            item(span = { GridItemSpan(dims.gridColumns) }) {
+                ShowMoreButton(
+                    isLoading = isLoading,
+                    onClick = { viewModel.loadMore() }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Full-width "Show More" affordance for the genre grid. Mirrors the styling of
+ * the per-row LoadMoreButton (red focus border, centered label + chevron) but
+ * spans the grid width. While [isLoading] is true (a loadMore() is in flight)
+ * it shows a spinner and won't fire another request.
+ */
+@Composable
+private fun ShowMoreButton(
+    isLoading: Boolean,
+    onClick: () -> Unit
+) {
+    val dims = responsiveDims()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Bg3)
+                .then(
+                    if (isFocused) {
+                        Modifier.border(3.dp, Red, RoundedCornerShape(8.dp))
+                    } else {
+                        Modifier
                     }
+                )
+                .clickable(
+                    enabled = !isLoading,
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onClick
+                )
+                .padding(horizontal = 32.dp, vertical = 14.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    color = Red,
+                    modifier = Modifier.size(24.dp)
+                )
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "Show More",
+                        color = if (isFocused) Red else TextPrimary,
+                        fontSize = if (dims.isTv) 16.sp else 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Icon(
+                        Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "Show More",
+                        tint = if (isFocused) Red else TextMuted,
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
             }
         }

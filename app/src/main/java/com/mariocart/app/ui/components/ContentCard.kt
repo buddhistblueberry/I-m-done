@@ -56,16 +56,24 @@ import com.mariocart.app.ui.util.responsiveDims
 fun ContentCard(
     item: TmdbItem,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    fillMaxWidth: Boolean = false
 ) {
     val dims = responsiveDims()
-    ContentCard(item = item, onClick = onClick, modifier = modifier, dims = dims)
+    ContentCard(item = item, onClick = onClick, modifier = modifier, dims = dims, fillMaxWidth = fillMaxWidth)
 }
 
 /**
  * Optional [FocusRequester] lets a parent screen ask the system to land D-pad
  * focus on a specific card (e.g. the first card in a row) so the user always
  * has a known starting point when they enter a screen on a no-pointer TV box.
+ *
+ * @param fillMaxWidth When true the card expands to fill its parent's width
+ *                     constraint instead of pinning to [ResponsiveDims.cardWidth].
+ *                     Use this inside a grid (e.g. Browse) so cards fill every
+ *                     column evenly on both phone and TV. Horizontal content
+ *                     rows leave it false so cards keep their fixed Netflix
+ *                     card footprint.
  */
 @Composable
 fun ContentCard(
@@ -73,7 +81,8 @@ fun ContentCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     dims: ResponsiveDims,
-    focusRequester: FocusRequester? = null
+    focusRequester: FocusRequester? = null,
+    fillMaxWidth: Boolean = false
 ) {
     val context = LocalContext.current
     val interactionSource = remember { MutableInteractionSource() }
@@ -108,7 +117,7 @@ fun ContentCard(
 
     Column(
         modifier = modifier
-            .width(dims.cardWidth)
+            .then(if (fillMaxWidth) Modifier.fillMaxWidth() else Modifier.width(dims.cardWidth))
             .clip(RoundedCornerShape(6.dp))
             .scale(scale)
             // Heavy shadow only on active cards — drawing a coloured shadow
@@ -153,7 +162,7 @@ fun ContentCard(
     ) {
         Box(
             modifier = Modifier
-                .width(dims.cardWidth)
+                .then(if (fillMaxWidth) Modifier.fillMaxWidth() else Modifier.width(dims.cardWidth))
                 .height(dims.cardImageHeight)
         ) {
             AsyncImage(
@@ -161,7 +170,7 @@ fun ContentCard(
                 contentDescription = item.displayTitle,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .width(dims.cardWidth)
+                    .then(if (fillMaxWidth) Modifier.fillMaxWidth() else Modifier.width(dims.cardWidth))
                     .height(dims.cardImageHeight)
                     .background(PureBlack)
             )

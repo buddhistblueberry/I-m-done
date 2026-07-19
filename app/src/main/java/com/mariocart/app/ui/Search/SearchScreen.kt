@@ -204,6 +204,7 @@ fun SearchScreen(
                         item = item,
                         onClick = { onItemClick(item) },
                         dims = dims,
+                        fillMaxWidth = true,
                         focusRequester = if (item === results.first()) firstResultFocusRequester else null
                     )
                 }

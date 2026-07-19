@@ -1,14 +1,15 @@
-# Round 2 — TV D-pad focus fixes, search, sliding sidebar, and Load More button
+# Round 3 — Comprehensive review + Show More for genre movie lists
 
-## Completed (uncommitted)
-- [x] Fix A: D-pad Up clamps at top of screen (focusGroup on all 7 scrollable screens)
-- [x] Fix B: Search Enter/Done dismisses keyboard + moves focus to results
-- [x] Fix C: ImeAction.Search instead of Done (magnifying glass on TV)
-- [x] Redundancy sweep: removed unused imports (ContentCard, ContentRow, HomeScreen, TvSideNav dims param)
-- [x] Load More button: moved from top-of-row to END of row, renamed "Explore All" → "Load More", D-pad focusable
-- [x] Fix D: TV sidebar slides away by default, slides in only on Left key press, slides out on nav selection
-- [x] Verified build compiles (gradlew compileDebugKotlin — BUILD SUCCESSFUL, 0 errors)
+## In progress
+- [ ] Commit & push all Round 3 changes to `fix/tv-dpad-focus-and-stale-show-data`
 
-## Remaining
-- [ ] Commit + push all Round 2 changes to branch fix/tv-dpad-focus-and-stale-show-data
-- [ ] Confirm PR #37 is updated
+## Done
+- [x] Fix BrowseScreen "Show More" button for genre movie lists
+  - [x] Restructure grid: always show cards when items non-empty; full-screen spinner only when `isLoading && items.isEmpty()`
+  - [x] Replace plain TextButton with D-pad-focusable styled "Show More" button (red border, spinner when loading)
+  - [x] Compile (BUILD SUCCESSFUL)
+- [x] MoviesScreen: add focusGroup() + rememberInitialFocusRequester
+- [x] BrowseScreen: replace chunked(3) Row hack with LazyVerticalGrid + GridCells.Fixed(dims.gridColumns)
+- [x] ContentCard: add fillMaxWidth param (grid cells fill instead of pin to fixed width)
+- [x] SearchScreen: pass fillMaxWidth = true to grid cards
+- [x] MainActivity: BackHandler to dismiss side rail + Right-key dismiss on TvSideNav

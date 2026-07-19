@@ -193,6 +193,9 @@ private fun AppRoot() {
         showSearch = false
         searchGenre = null
     }
+    // TV: Back also dismisses the side rail (if visible) before anything else
+    // peels off, so a TV remote user is never stuck with the rail on screen.
+    BackHandler(enabled = sideNavVisible) { sideNavVisible = false }
 
     // ── Search overlay ──
     if (showSearch) {
@@ -290,6 +293,7 @@ private fun AppRoot() {
                         showSearch = true
                         sideNavVisible = false
                     },
+                    onDismiss = { sideNavVisible = false },
                     focusRequester = sideNavFocusRequester
                 )
             }
@@ -439,6 +443,7 @@ private fun TvSideNav(
     currentTab: Tab,
     onTabSelected: (Tab) -> Unit,
     onSearchClick: () -> Unit,
+    onDismiss: () -> Unit = {},
     focusRequester: FocusRequester? = null
 ) {
     Surface(
@@ -447,6 +452,15 @@ private fun TvSideNav(
         modifier = Modifier
             .fillMaxHeight()
             .width(120.dp)
+            // Pressing Right while focused inside the rail slides it back
+            // away (D-pad dismiss without having to pick an item). Back is
+            // handled by the BackHandler in AppRoot.
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp && event.key == Key.DirectionRight) {
+                    onDismiss()
+                    true
+                } else false
+            }
     ) {
         Column(
             modifier = Modifier
