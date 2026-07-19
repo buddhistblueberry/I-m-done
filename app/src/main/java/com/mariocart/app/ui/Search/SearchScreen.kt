@@ -1,6 +1,9 @@
 package com.mariocart.app.ui.search
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
@@ -26,12 +30,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.ui.components.ContentCard
@@ -51,6 +63,8 @@ fun SearchScreen(
     val results by viewModel.results.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val dims = responsiveDims()
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
 
     LaunchedEffect(initialGenre) {
         if (initialGenre != null) {
@@ -67,7 +81,16 @@ fun SearchScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Search", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black)
             Spacer(Modifier.weight(1f))
-            IconButton(onClick = onClose) {
+            val closeSrc = remember { MutableInteractionSource() }
+            val closeFocused by closeSrc.collectIsFocusedAsState()
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier
+                    .then(
+                        if (closeFocused) Modifier.border(2.dp, Red, RoundedCornerShape(8.dp))
+                        else Modifier
+                    )
+            ) {
                 Icon(Icons.Default.Close, "Close", tint = Color.White)
             }
         }
@@ -77,6 +100,14 @@ fun SearchScreen(
             onValueChange = { viewModel.updateQuery(it) },
             placeholder = { Text("Search movies or TV shows...", color = TextMuted) },
             leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = {
+                // Pressing Enter / Done on the remote keyboard hides it so
+                // the user can D-pad through the results grid.
+                keyboard?.hide()
+                focusManager.clearFocus()
+            }),
             modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Red,

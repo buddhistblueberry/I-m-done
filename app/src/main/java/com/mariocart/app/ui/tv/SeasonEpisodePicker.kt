@@ -283,12 +283,18 @@ private fun ShowDetailHero(
         )
 
         // Back button
+        val backSrc = remember { MutableInteractionSource() }
+        val backFocused by backSrc.collectIsFocusedAsState()
         IconButton(
             onClick = onBack,
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
                 .padding(8.dp)
+                .then(
+                    if (backFocused) Modifier.border(2.dp, Red, RoundedCornerShape(8.dp))
+                    else Modifier
+                )
         ) {
             Icon(
                 Icons.AutoMirrored.Filled.ArrowBack,
@@ -373,7 +379,7 @@ private fun PlayButton(
             .background(PlayWhite)
             .then(
                 if (isFocused) {
-                    Modifier.border(3.dp, PlayWhite.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                    Modifier.border(3.dp, Red, RoundedCornerShape(6.dp))
                 } else Modifier
             )
             .clickable(
@@ -449,7 +455,7 @@ private fun SeasonChip(
             .background(if (isSelected) Red else Bg3)
             .then(
                 if (isFocused && !isSelected) {
-                    Modifier.border(2.dp, PlayWhite, RoundedCornerShape(8.dp))
+                    Modifier.border(2.dp, Red, RoundedCornerShape(8.dp))
                 } else Modifier
             )
             .clickable(

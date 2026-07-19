@@ -35,6 +35,7 @@ import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.ui.components.ContentRow
 import com.mariocart.app.ui.components.HeroBanner
 import com.mariocart.app.ui.theme.Bg3
+import com.mariocart.app.ui.theme.Red
 import com.mariocart.app.ui.theme.TextPrimary
 
 private data class GenreChip(val emoji: String, val label: String, val genreId: String)
@@ -157,7 +158,7 @@ private fun GenreChipItem(chip: GenreChip, onClick: () -> Unit) {
             .clip(RoundedCornerShape(20.dp))
             .background(Bg3)
             .then(
-                if (isFocused) Modifier.border(2.dp, Color.White, RoundedCornerShape(20.dp))
+                if (isFocused) Modifier.border(2.dp, Red, RoundedCornerShape(20.dp))
                 else Modifier
             )
             .clickable(

@@ -3,6 +3,7 @@ package com.mariocart.app.ui
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -150,6 +151,8 @@ private fun AppRoot() {
     // NOT recompose every time AppRoot re-renders (scroll perf).
     val onItemClick: (TmdbItem) -> Unit = remember {
         { item ->
+            showSearch = false
+            searchGenre = null
             if (item.isMovie) selectedMovie = item
             else selectedTv = item
         }
@@ -162,6 +165,17 @@ private fun AppRoot() {
             searchGenre = genreId
             showSearch = true
         }
+    }
+
+    // ── Back-button hierarchy ──────────────────────────────────────────────
+    // On a TV remote the Back button should NEVER instantly quit the app.
+    // It peels off overlays one layer at a time: detail → search → base.
+    // Only at the base screen do we let the system handle back (exit).
+    BackHandler(enabled = selectedTv != null) { selectedTv = null }
+    BackHandler(enabled = selectedMovie != null) { selectedMovie = null }
+    BackHandler(enabled = showSearch) {
+        showSearch = false
+        searchGenre = null
     }
 
     // ── Search overlay ──

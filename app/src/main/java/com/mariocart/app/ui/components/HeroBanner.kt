@@ -263,7 +263,7 @@ private fun HeroButton(
         shape = RoundedCornerShape(4.dp),
         modifier = Modifier.then(
             if (isFocused && isTv) {
-                Modifier.border(2.dp, Color.White, RoundedCornerShape(4.dp))
+                Modifier.border(2.dp, Red, RoundedCornerShape(4.dp))
             } else {
                 Modifier
             }
