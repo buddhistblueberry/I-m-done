@@ -39,6 +39,12 @@ class MarioCartApplication : Application(), ImageLoaderFactory {
         // already known to be dead for a given movie/show.
         com.mariocart.app.data.cache.StreamAvailabilityCache.init(this)
 
+        // Initialise the persistent watch-progress store so the player can
+        // save/restore positions and the Home screen can show a
+        // "Continue Watching" row + a "Recommended for You" row built from the
+        // user's watch history.
+        com.mariocart.app.data.repository.WatchProgressStore.init(this)
+
         // Start the "Kodi-like" background engine. This inits the headless
         // (pure OkHttp, NO WebView) LookMovieTomb addon flow and launches the
         // foreground service that keeps it alive so it can pre-resolve movie

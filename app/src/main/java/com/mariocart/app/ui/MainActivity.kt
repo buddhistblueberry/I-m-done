@@ -160,6 +160,48 @@ private fun AppRoot() {
         context.startActivity(intent)
     }
 
+    /**
+     * Launches the player at a saved resume position — used by the Continue
+     * Watching row. For TV shows the season/episode are looked up from the
+     * stored WatchProgress so the user lands on the exact episode they were
+     * watching, at the exact position. For movies it's a straight resume.
+     */
+    fun launchResume(item: TmdbItem, positionMs: Long) {
+        if (item.isMovie) {
+            val intent = PlayerActivity.newIntent(
+                context = context,
+                tmdbId = item.id,
+                contentType = "movie",
+                title = item.displayTitle,
+                year = item.year,
+                posterUrl = item.posterUrl,
+                backdropUrl = item.backdropUrl,
+                resumePositionMs = positionMs
+            )
+            context.startActivity(intent)
+        } else {
+            // TV: look up the stored season/episode so we resume the right
+            // episode (the Continue Watching card may represent S2 E5, etc.).
+            val wp = com.mariocart.app.data.repository.WatchProgressStore
+                .get("tv_${item.id}")
+            val season = wp?.season ?: 1
+            val episode = wp?.episode ?: 1
+            val intent = PlayerActivity.newIntent(
+                context = context,
+                tmdbId = item.id,
+                contentType = "tv",
+                season = season,
+                episode = episode,
+                title = item.displayTitle,
+                year = item.year,
+                posterUrl = item.posterUrl,
+                backdropUrl = item.backdropUrl,
+                resumePositionMs = positionMs
+            )
+            context.startActivity(intent)
+        }
+    }
+
     // ── Item-open router ───────────────────────────────────────────────
     // Movies → Netflix-style DetailScreen (Play button launches the player).
     // TV shows → Netflix-style SeasonEpisodePicker (detail hero + episodes).
@@ -172,6 +214,13 @@ private fun AppRoot() {
             if (item.isMovie) selectedMovie = item
             else selectedTv = item
         }
+    }
+
+    // ── Continue Watching resume handler ─────────────────────────── //
+    // Launches the player directly at the saved position (bypassing the
+    // detail screen) so a Continue Watching card resumes in one click.
+    val onResume: (TmdbItem, Long) -> Unit = remember {
+        { item, positionMs -> launchResume(item, positionMs) }
     }
 
     // Stable search-with-genre callback (passed into the always-visible main
@@ -272,7 +321,8 @@ private fun AppRoot() {
                 NetflixScreenSwitch(
                     currentTab = currentTab,
                     onItemClick = onItemClick,
-                    onSearchWithGenre = onSearchWithGenre
+                    onSearchWithGenre = onSearchWithGenre,
+                    onResume = onResume
                 )
             }
 
@@ -304,7 +354,8 @@ private fun AppRoot() {
             NetflixScreenSwitch(
                 currentTab = currentTab,
                 onItemClick = onItemClick,
-                onSearchWithGenre = onSearchWithGenre
+                onSearchWithGenre = onSearchWithGenre,
+                onResume = onResume
             )
             NetflixTopBar(
                 currentTab = currentTab,
@@ -320,7 +371,8 @@ private fun AppRoot() {
 private fun NetflixScreenSwitch(
     currentTab: Tab,
     onItemClick: (TmdbItem) -> Unit,
-    onSearchWithGenre: (String) -> Unit
+    onSearchWithGenre: (String) -> Unit,
+    onResume: (TmdbItem, Long) -> Unit
 ) {
     AnimatedContent(
         targetState = currentTab,
@@ -332,7 +384,8 @@ private fun NetflixScreenSwitch(
         when (tab) {
             Tab.Home -> HomeScreen(
                 onItemClick = onItemClick,
-                onSearchWithGenre = onSearchWithGenre
+                onSearchWithGenre = onSearchWithGenre,
+                onResume = onResume
             )
             Tab.Movies -> MoviesScreen(onItemClick = onItemClick)
             Tab.TV -> TvScreen(onItemClick = onItemClick)
