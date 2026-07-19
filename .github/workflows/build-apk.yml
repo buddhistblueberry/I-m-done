@@ -11,7 +11,10 @@ permissions:
 jobs:
   build:
     name: Build & Release Signed APK
-    runs-on: ubuntu-latest
+    # Use a specific runner image instead of ubuntu-latest. During GitHub
+    # Actions runner congestion, ubuntu-latest (the most popular label) gets
+    # queued the longest; pinning to a specific image often allocates faster.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
