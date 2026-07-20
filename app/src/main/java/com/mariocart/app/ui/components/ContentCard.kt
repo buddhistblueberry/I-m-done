@@ -1,6 +1,8 @@
 package com.mariocart.app.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -106,6 +108,32 @@ fun ContentCard(
         label = "cardScale"
     )
 
+    // ── Stable modifier chain (focus-ring flutter fix) ─────────────────
+    // The #1 cause of the red focus ring disappearing a fraction of a second
+    // after landing on a card was that the modifier CHAIN itself mutated on
+    // focus: a conditional `.border(...)` / `.shadow(...)` node was inserted
+    // and removed every time `active` flipped. Inserting/removing a modifier
+    // node re-creates the clickable's focusable node, which transiently
+    // drops focus → isFocused flips false → the ring vanishes → recompose →
+    // focus returns → the ring comes back, forever oscillating.
+    //
+    // Fix: keep the chain structurally IDENTICAL at all times and only vary
+    // *values* (colour / elevation) that don't add or remove nodes:
+    //   • border is ALWAYS present; its colour is Color.Transparent when idle
+    //     and Red when focused — one node, swapped colour, no chain mutation.
+    //   • shadow is ALWAYS present; its elevation animates 0 → 24dp — one
+    //     node, animated value, no chain mutation.
+    val focusBorderColor by animateColorAsState(
+        targetValue = if (active) Red else Color.Transparent,
+        animationSpec = tween(durationMillis = 150),
+        label = "cardFocusBorder"
+    )
+    val shadowElevation by animateFloatAsState(
+        targetValue = if (active) 24f else 0f,
+        animationSpec = tween(durationMillis = 150),
+        label = "cardShadowElevation"
+    )
+
     // Reuse a single ImageRequest data object per card so Coil's cache key is
     // stable and the request isn't rebuilt on every recomposition.
     val imageRequest = remember(item.posterUrl) {
@@ -120,45 +148,35 @@ fun ContentCard(
             .then(if (fillMaxWidth) Modifier.fillMaxWidth() else Modifier.width(dims.cardWidth))
             .clip(RoundedCornerShape(6.dp))
             .scale(scale)
-            // Heavy shadow only on active cards — drawing a coloured shadow
-            // on every idle card during fast scroll is the #1 GPU bottleneck.
-            // Idle cards get a cheap 0dp elevation (no shadow render pass).
-            .then(
-                if (active) {
-                    Modifier.shadow(
-                        elevation = 24.dp,
-                        shape = RoundedCornerShape(6.dp),
-                        ambientColor = Red.copy(alpha = 0.35f),
-                        spotColor = Red.copy(alpha = 0.45f),
-                    )
-                } else {
-                    Modifier
-                }
+            // Shadow is ALWAYS in the chain (structural stability — see the
+            // note above). Its elevation animates 0 → 24dp so idle cards pay
+            // effectively zero shadow cost (0 elevation = no shadow pass),
+            // while focused cards get the Netflix red glow. Keeping the node
+            // constant means focus is never dropped by a chain mutation.
+            .shadow(
+                elevation = shadowElevation.dp,
+                shape = RoundedCornerShape(6.dp),
+                ambientColor = Red.copy(alpha = 0.35f),
+                spotColor = Red.copy(alpha = 0.45f),
             )
             .background(Bg3)
-            // Single focusable node: .clickable() already registers a
-            // focusable node for D-pad navigation. We previously ALSO called
-            // .focusable(interactionSource) which created a SECOND focusable
-            // node sharing the same interaction source — on a no-pointer TV
-            // remote the D-pad focus oscillated between the two nodes and
-            // collectIsFocusedAsState() flipped false, making the red ring
-            // flash and disappear. Removing the redundant .focusable() leaves
-            // exactly one focus target, so the ring STAYS on the card until
-            // the user moves to the next one. Enter / D-pad-center is still
-            // routed to onClick by .clickable().
+            // Single focusable node: .clickable() registers the one focusable
+            // node for D-pad navigation. (A previously-present redundant
+            // .focusable(interactionSource) was removed because it created a
+            // SECOND focusable node that shared the interaction source and
+            // made focus oscillate. Do NOT re-add .focusable() here.)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick
             )
-            .then(
-                if (active) {
-                    Modifier.border(3.dp, Red, RoundedCornerShape(6.dp))
-                } else {
-                    Modifier
-                }
-            )
+            // Focus ring border is ALWAYS in the chain (structural stability).
+            // Its colour animates Transparent → Red so the node is constant
+            // and focus is never dropped by a chain mutation. This is what
+            // makes the red outline STAY until the user moves to the next
+            // card instead of flickering off after a fraction of a second.
+            .border(3.dp, focusBorderColor, RoundedCornerShape(6.dp))
     ) {
         Box(
             modifier = Modifier

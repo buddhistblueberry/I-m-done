@@ -3,6 +3,7 @@ package com.mariocart.app.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -92,7 +93,16 @@ fun ContentRow(
             horizontalArrangement = Arrangement.spacedBy(dims.cardSpacing),
             // Netflix rows don't clip the focused (scaled-up) card — give
             // vertical headroom so the scale + shadow aren't cut off.
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            // focusGroup(): makes this row OWN its horizontal D-pad traversal.
+            // Without it, a Left press mid-row bubbles up to the screen-level
+            // focusGroup (which only traps vertical nav) and then to the
+            // content Box's onKeyEvent — which opens the side rail even though
+            // the user was just trying to move left one card. With focusGroup
+            // on the row, Left/Right is consumed here for card-to-card
+            // movement, and only a Left press on the FIRST card (nothing
+            // further left to move to) reaches the outer handler → rail.
+            modifier = Modifier.focusGroup()
         ) {
             items(
                 count = items.size,

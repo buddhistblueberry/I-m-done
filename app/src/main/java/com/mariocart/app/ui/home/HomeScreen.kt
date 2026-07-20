@@ -174,13 +174,11 @@ fun HomeScreen(
                 onLoadMore = { viewModel.loadMoreTopRated() }
             )
         }
-        item {
-            ContentRow(
-                title = "Popular Movies", emoji = "\uD83C\uDF1F",
-                items = popularMovies, onItemClick = onItemClick,
-                onLoadMore = { viewModel.loadMorePopularMovies() }
-            )
-        }
+        // NOTE: a second "Popular Movies" row used to live here but was
+        // removed — it was near-identical to "Top Rated Movies" (both are
+        // movie rows ranked by a popularity/rating signal) and the user
+        // flagged the duplication. Trending Now + New in Theatres already
+        // cover the "popular" angle, so the home page no longer repeats it.
     }
 }
 

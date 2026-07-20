@@ -108,6 +108,20 @@ data class ResponsiveDims(
      * instead of an overlay top bar, so this is 0.
      */
     val topContentPadding: Dp,
+    /**
+     * Width of the persistent TV navigation rail. Content is offset by this
+     * amount on TV so it never sits under the rail. 0 on phones (no rail).
+     */
+    val navRailWidth: Dp,
+    /**
+     * Overscan / safe-area inset for TV. Android TV guidelines recommend a
+     * minimum 5% margin (27px top/bottom, 48px left/right) so UI is not
+     * clipped by TV bezels and overscan. Phones use 0 (the status-bar /
+     * nav-bar insets handle edge spacing).
+     */
+    val safeAreaHorizontal: Dp,
+    val safeAreaTop: Dp,
+    val safeAreaBottom: Dp,
 ) {
     companion object {
         val Phone = ResponsiveDims(
@@ -125,24 +139,38 @@ data class ResponsiveDims(
             // Status-bar inset (~24dp) + top bar vertical padding (10dp) +
             // tab text + underline (~26dp) + a little breathing room.
             topContentPadding = 72.dp,
+            navRailWidth = 0.dp,
+            safeAreaHorizontal = 0.dp,
+            safeAreaTop = 0.dp,
+            safeAreaBottom = 0.dp,
         )
 
         val TV = ResponsiveDims(
             isTv = true,
-            // Cards on TV are ~50% larger so they're legible from the couch.
-            cardWidth = 200.dp,
-            cardHeight = 300.dp,
-            cardImageHeight = 300.dp,
-            cardSpacing = 16.dp,
-            rowPadding = 32.dp,
-            heroHeight = 560.dp,
-            heroTitleSize = 40,
-            navIconSize = 32.dp,
-            navLabelSize = 14,
+            // Cards on TV are larger so they're legible from the couch.
+            cardWidth = 210.dp,
+            cardHeight = 315.dp,
+            cardImageHeight = 315.dp,
+            cardSpacing = 18.dp,
+            // rowPadding already provides left/right spacing; the safe-area
+            // inset is added separately so it applies even on hero/edge cases.
+            rowPadding = 40.dp,
+            heroHeight = 600.dp,
+            heroTitleSize = 44,
+            navIconSize = 30.dp,
+            navLabelSize = 13,
             // TV screens are wide — 5 columns fills the space nicely.
             gridColumns = 5,
             // No overlay top bar on TV (side rail layout) — nothing to clear.
             topContentPadding = 0.dp,
+            // Persistent collapsed rail width (icons only). Expands on focus
+            // but content is laid out to clear this fixed width so it never
+            // overlaps a card even mid-expand.
+            navRailWidth = 72.dp,
+            // Android TV safe-area / overscan margins (5% guideline).
+            safeAreaHorizontal = 48.dp,
+            safeAreaTop = 27.dp,
+            safeAreaBottom = 27.dp,
         )
     }
 }

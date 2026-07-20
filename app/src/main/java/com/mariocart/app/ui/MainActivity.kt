@@ -127,6 +127,10 @@ private fun AppRoot() {
     // nav item slides it back away so it never covers content while browsing.
     var sideNavVisible by remember { mutableStateOf(false) }
     val sideNavFocusRequester = remember { FocusRequester() }
+    // True only during the one-time startup reveal of the rail. While true the
+    // rail auto-retracts after a few seconds (if the user hasn't picked an
+    // item or pressed Right to dismiss it) so it never lingers over content.
+    var sideNavAutoShown by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         com.mariocart.app.ui.AutoUpdater.checkAndPrompt(context)
@@ -244,7 +248,10 @@ private fun AppRoot() {
     }
     // TV: Back also dismisses the side rail (if visible) before anything else
     // peels off, so a TV remote user is never stuck with the rail on screen.
-    BackHandler(enabled = sideNavVisible) { sideNavVisible = false }
+    BackHandler(enabled = sideNavVisible) {
+        sideNavVisible = false
+        sideNavAutoShown = false
+    }
 
     // ── Search overlay ──
     if (showSearch) {
@@ -288,6 +295,31 @@ private fun AppRoot() {
         // the first card of a row — i.e. "at the beginning of a line". It
         // slides back out as soon as a nav item is chosen, so it never gets
         // in the way while scrolling through movies/shows.
+        //
+        // ONE-TIME STARTUP REVEAL: the first time the TV layout appears we
+        // slide the rail in and land focus on it so the user immediately
+        // discovers that a side menu exists (otherwise a no-pointer TV remote
+        // user could browse for a long time without ever realising it's
+        // there). After a few seconds — if they haven't picked an item or
+        // pressed Right to dismiss — it auto-retracts so it doesn't linger
+        // over the content. They can always bring it back with a Left press.
+        LaunchedEffect(Unit) {
+            kotlinx.coroutines.delay(400)
+            sideNavVisible = true
+            sideNavAutoShown = true
+        }
+        // Auto-retract the startup-revealed rail after a grace period. This
+        // only fires for the auto-shown reveal (sideNavAutoShown == true);
+        // a user-invoked Left-press reveal (sideNavAutoShown == false) stays
+        // until they explicitly dismiss it.
+        LaunchedEffect(sideNavVisible, sideNavAutoShown) {
+            if (sideNavVisible && sideNavAutoShown) {
+                kotlinx.coroutines.delay(4500)
+                sideNavVisible = false
+                sideNavAutoShown = false
+            }
+        }
+
         Box(modifier = Modifier.fillMaxSize().background(Bg)) {
             // When the side rail becomes visible, land D-pad focus on it so
             // the user can immediately navigate the nav items.
@@ -306,11 +338,13 @@ private fun AppRoot() {
                         // Reveal the side rail when the user presses Left and
                         // it is currently hidden — i.e. "at the beginning of a
                         // line". The LaunchedEffect above then moves focus
-                        // into the rail once it appears.
+                        // into the rail once it appears. A manual reveal is
+                        // NOT auto-shown, so it stays until dismissed.
                         if (!sideNavVisible &&
                             event.type == KeyEventType.KeyUp &&
                             event.key == Key.DirectionLeft
                         ) {
+                            sideNavAutoShown = false
                             sideNavVisible = true
                             true
                         } else {
@@ -338,12 +372,21 @@ private fun AppRoot() {
                     onTabSelected = {
                         currentTab = it
                         sideNavVisible = false
+                        sideNavAutoShown = false
                     },
                     onSearchClick = {
                         showSearch = true
                         sideNavVisible = false
+                        sideNavAutoShown = false
                     },
-                    onDismiss = { sideNavVisible = false },
+                    onDismiss = {
+                        sideNavVisible = false
+                        sideNavAutoShown = false
+                    },
+                    // Show the "press Left anytime" hint only during the
+                    // startup auto-reveal, so first-time users learn the
+                    // gesture but returning users aren't nagged.
+                    showHint = sideNavAutoShown,
                     focusRequester = sideNavFocusRequester
                 )
             }
@@ -497,6 +540,7 @@ private fun TvSideNav(
     onTabSelected: (Tab) -> Unit,
     onSearchClick: () -> Unit,
     onDismiss: () -> Unit = {},
+    showHint: Boolean = false,
     focusRequester: FocusRequester? = null
 ) {
     Surface(
@@ -522,6 +566,13 @@ private fun TvSideNav(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // One-time discoverability hint: a small chip at the top of the
+            // rail that tells first-time users they can reopen this menu with
+            // a Left press at any time. Only shown during the startup
+            // auto-reveal; returning users never see it.
+            if (showHint) {
+                SideNavHintChip()
+            }
             // The first item (Search) receives the shared focus requester so
             // the rail grabs D-pad focus as soon as it slides in.
             TvNavItem(
@@ -540,6 +591,39 @@ private fun TvSideNav(
                 )
             }
         }
+    }
+}
+
+/**
+ * Small "press ← anytime" hint shown at the top of the side rail during the
+ * one-time startup reveal. Non-focusable (it's purely informational) so it
+ * never steals D-pad focus from the first real nav item below it.
+ */
+@Composable
+private fun SideNavHintChip() {
+    Column(
+        modifier = Modifier
+            .width(100.dp)
+            .padding(bottom = 4.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Red.copy(alpha = 0.18f))
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "◀ Menu",
+            color = Red,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "press Left\nto reopen",
+            color = TextMuted,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Normal,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            lineHeight = 11.sp
+        )
     }
 }
 
