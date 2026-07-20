@@ -64,7 +64,8 @@ fun TvScreen(
         item {
             ContentRow(
                 title = "Top Rated Shows", emoji = "\uD83C\uDFC6",
-                items = topRated, onItemClick = onItemClick
+                items = topRated, onItemClick = onItemClick,
+                onLoadMore = { viewModel.loadMoreTopRated() }
             )
         }
     }

@@ -24,6 +24,7 @@ class MoviesViewModel : ViewModel() {
     val topRated: StateFlow<List<TmdbItem>> = _topRated
 
     private var popularPage = 1
+    private var topRatedPage = 1
     private val _isLoadingMore = MutableStateFlow(false)
     val isLoadingMore: StateFlow<Boolean> = _isLoadingMore
 
@@ -77,6 +78,29 @@ class MoviesViewModel : ViewModel() {
                 val availableMore = StreamAvailabilityChecker.filterAvailable(ctx, more)
                 val moreIds = more.map { it.id }.toSet()
                 _popular.value = _popular.value.filter { it.id !in moreIds } + availableMore
+            }
+            _isLoadingMore.value = false
+        }
+    }
+
+    /**
+     * Loads the next page of top-rated movies and appends the new (deduped)
+     * titles to the Top Rated row, then filters the batch down to only
+     * streamable titles \u2014 mirroring [loadMore] for the Popular row.
+     */
+    fun loadMoreTopRated() = viewModelScope.launch {
+        loadMutex.withLock {
+            if (_isLoadingMore.value) return@withLock
+            _isLoadingMore.value = true
+            topRatedPage++
+            val existing = _topRated.value.map { it.id }.toSet()
+            val more = repo.getTopRatedMovies(topRatedPage).filter { it.id !in existing }
+            _topRated.value = _topRated.value + more
+            val ctx = appContext()
+            if (ctx != null) {
+                val availableMore = StreamAvailabilityChecker.filterAvailable(ctx, more)
+                val moreIds = more.map { it.id }.toSet()
+                _topRated.value = _topRated.value.filter { it.id !in moreIds } + availableMore
             }
             _isLoadingMore.value = false
         }
