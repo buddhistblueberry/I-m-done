@@ -2,6 +2,7 @@ package com.mariocart.app.ui.search
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -12,13 +13,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -57,8 +62,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mariocart.app.data.model.TmdbItem
 import com.mariocart.app.ui.components.ContentCard
 import com.mariocart.app.ui.theme.Bg
+import com.mariocart.app.ui.theme.Bg3
 import com.mariocart.app.ui.theme.Red
 import com.mariocart.app.ui.theme.TextMuted
+import com.mariocart.app.ui.theme.TextPrimary
 import com.mariocart.app.ui.util.responsiveDims
 import com.mariocart.app.ui.util.rememberInitialFocusRequester
 
@@ -72,6 +79,8 @@ fun SearchScreen(
     val query by viewModel.query.collectAsState()
     val results by viewModel.results.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val canLoadMore by viewModel.canLoadMore.collectAsState()
+    val loadingMore by viewModel.loadingMore.collectAsState()
     val dims = responsiveDims()
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -208,6 +217,21 @@ fun SearchScreen(
                         focusRequester = if (item === results.first()) firstResultFocusRequester else null
                     )
                 }
+
+                // "Load More" footer - a full-width, D-pad-focusable button
+                // shown whenever there are more pages available. While a
+                // loadMore() is in flight it shows a spinner and is disabled.
+                // This is the "no load more button so I can see more of what
+                // I searched or what genre I chose" fix for Search on TV.
+                if (canLoadMore) {
+                    item(span = { GridItemSpan(dims.gridColumns) }) {
+                        SearchLoadMoreButton(
+                            isLoading = loadingMore,
+                            isTv = dims.isTv,
+                            onClick = { viewModel.loadMore() }
+                        )
+                    }
+                }
             }
         } else if (query.length >= 2) {
             Box(
@@ -222,6 +246,75 @@ fun SearchScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text("Start typing to search", color = TextMuted, fontSize = 16.sp)
+            }
+        }
+    }
+}
+
+/**
+ * Full-width "Load More" affordance for the search results grid. Mirrors the
+ * styling of the Browse screen's ShowMoreButton (red focus border, centered
+ * label + chevron) so the two screens feel consistent. While [isLoading] is
+ * true (a loadMore() is in flight) it shows a spinner and won't fire another
+ * request. Fully D-pad-focusable so it's reachable by scrolling the grid to
+ * the bottom on an Android TV box.
+ */
+@Composable
+private fun SearchLoadMoreButton(
+    isLoading: Boolean,
+    isTv: Boolean,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Bg3)
+                .then(
+                    if (isFocused) {
+                        Modifier.border(3.dp, Red, RoundedCornerShape(8.dp))
+                    } else {
+                        Modifier
+                    }
+                )
+                .clickable(
+                    enabled = !isLoading,
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onClick
+                )
+                .padding(horizontal = 32.dp, vertical = 14.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    color = Red,
+                    modifier = Modifier.size(24.dp)
+                )
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "Load More",
+                        color = if (isFocused) Red else TextPrimary,
+                        fontSize = if (isTv) 16.sp else 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Icon(
+                        Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "Load More",
+                        tint = if (isFocused) Red else TextMuted,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
         }
     }
