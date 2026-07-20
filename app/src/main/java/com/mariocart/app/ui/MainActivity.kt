@@ -154,9 +154,12 @@ private fun AppRoot() {
     val bmcPrefs = remember {
         context.getSharedPreferences("support_prefs", android.content.Context.MODE_PRIVATE)
     }
+    // isTvDevice() is @Composable, so it must be called in the composable body
+    // (not inside a remember {} lambda, where composable calls are forbidden).
+    val isTv = isTvDevice()
     var showBmcDialog by remember {
         mutableStateOf(
-            !isTvDevice() && !bmcPrefs.getBoolean("bmc_prompt_seen", false)
+            !isTv && !bmcPrefs.getBoolean("bmc_prompt_seen", false)
         )
     }
     val onBmcDismiss: () -> Unit = {
