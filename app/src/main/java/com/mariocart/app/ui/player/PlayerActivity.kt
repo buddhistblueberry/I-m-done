@@ -43,6 +43,8 @@ import com.mariocart.app.data.cache.StreamAvailabilityCache
 import com.mariocart.app.data.engine.KodiEngine
 import com.mariocart.app.data.model.WatchProgress
 import com.mariocart.app.data.repository.ContentRepository
+import com.mariocart.app.data.model.Subtitle
+import com.mariocart.app.data.subtitles.SubdlFetcher
 import com.mariocart.app.data.repository.WatchProgressStore
 import com.mariocart.app.data.server.DahmerMoviesExtractor
 import com.mariocart.app.data.server.LordFlixExtractor
@@ -1837,6 +1839,7 @@ private fun ExoPlayerView(
     var availableSubtitles by remember { mutableStateOf<List<SubtitleTrackInfo>>(emptyList()) }
     var selectedSubtitle by remember { mutableStateOf("Off") }
     var showSubtitleMenu by remember { mutableStateOf(false) }
+    var subdlSubtitles by remember { mutableStateOf<List<Subtitle>>(emptyList()) }
 
     // Track when the first frame has rendered so we can hide the thumbnail.
     var isReady by remember { mutableStateOf(false) }
@@ -1917,21 +1920,43 @@ private fun ExoPlayerView(
         selectedSubtitle = "Off"
     }
 
+    // ── Fetch subtitles from Subdl (one call per content, cached in state) ──
+    LaunchedEffect(progressTmdbId, progressContentType, progressSeason, progressEpisode) {
+        if (progressTmdbId != -1) {
+            subdlSubtitles = SubdlFetcher.fetch(
+                progressTmdbId, progressContentType,
+                progressSeason, progressEpisode
+            )
+        }
+    }
+
     // Build the MediaItem fresh from the current URL every time. Previously
     // a `mediaItemHolder` cached the FIRST media item and never updated when
     // the URL changed (server switch) — so the new source's URL was silently
     // ignored and the stale (broken) source kept "playing" with a known
     // duration but no video, then errored and switched again.
-    val mediaItem = remember(url) {
+    val mediaItem = remember(url, subdlSubtitles) {
         val mimeType = guessMimeType(url)
-        if (mimeType != null) {
+        val builder = if (mimeType != null) {
             MediaItem.Builder()
                 .setUri(Uri.parse(url))
                 .setMimeType(mimeType)
-                .build()
         } else {
-            MediaItem.fromUri(Uri.parse(url))
+            MediaItem.Builder().setUri(Uri.parse(url))
         }
+        if (subdlSubtitles.isNotEmpty()) {
+            builder.setSubtitleConfigurations(
+                subdlSubtitles.map { sub ->
+                    MediaItem.SubtitleConfiguration.Builder(Uri.parse(sub.url))
+                        .setMimeType(guessSubMimeType(sub.url))
+                        .setLanguage(sub.language)
+                        .setLabel(sub.label)
+                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .build()
+                }
+            )
+        }
+        builder.build()
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -2592,6 +2617,18 @@ private fun guessMimeType(url: String): String? {
     if (u.contains("/file/") && !u.contains(".m3u8") && !u.contains(".mpd")) return MimeTypes.VIDEO_MP4
 
     return null
+}
+
+/** Guesses MIME type for a subtitle URL. Defaults to WebVTT. */
+private fun guessSubMimeType(url: String): String {
+    val u = url.lowercase()
+    return when {
+        u.endsWith(".vtt") || u.contains(".vtt?") -> MimeTypes.TEXT_VTT
+        u.endsWith(".srt") || u.contains(".srt?") -> MimeTypes.APPLICATION_SUBRIP
+        u.endsWith(".ass") || u.contains(".ass?") -> "text/x-ass"
+        u.endsWith(".ssa") || u.contains(".ssa?") -> "text/x-ssa"
+        else -> MimeTypes.TEXT_VTT
+    }
 }
 
 /**
