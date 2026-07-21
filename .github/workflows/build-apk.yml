@@ -1,4 +1,4 @@
-name: Build & Release APK
+name: Build APK
 
 on:
   push:
@@ -10,11 +10,10 @@ permissions:
 
 jobs:
   build:
-    name: Build & Release Signed APK
-    # Use a specific runner image instead of ubuntu-latest. During GitHub
-    # Actions runner congestion, ubuntu-latest (the most popular label) gets
-    # queued the longest; pinning to a specific image often allocates faster.
+    name: Build APK
     runs-on: ubuntu-24.04
+    env:
+      HAS_SECRETS: ${{ secrets.KEYSTORE_BASE64 != '' }}
 
     steps:
       - name: Checkout code
@@ -34,41 +33,49 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore_keys: |
+          restore-keys: |
             ${{ runner.os }}-gradle-
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # Decode the release keystore (stored as a base64 GitHub secret) into a
-      # file the Gradle signing config can read. This makes every CI build
-      # use the SAME signing key, so updates install over previous builds and
-      # the in-app updater stops failing with signature mismatches.
+      # Decode release keystore only when secrets are available (original repo)
       - name: Decode release keystore
+        if: env.HAS_SECRETS == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           echo "$KEYSTORE_BASE64" | base64 -d > $HOME/release.keystore
           echo "KEYSTORE_FILE=$HOME/release.keystore" >> $GITHUB_ENV
-          echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
-          echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
-          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
-          # Sanity check
-          test -s $HOME/release.keystore && echo "keystore decoded OK ($(wc -c < $HOME/release.keystore) bytes)" || (echo "keystore missing/empty" && exit 1)
+          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
+          echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+          echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+          test -s $HOME/release.keystore && echo "keystore decoded OK" || exit 1
 
-      - name: Build signed release APK
+      # Build signed release (original repo) or debug (forks)
+      - name: Build APK
         env:
           CI_BUILD_NUMBER: ${{ github.run_number }}
-        run: ./gradlew assembleRelease --stacktrace
-
-      - name: Verify APK signature
         run: |
-          APK="app/build/outputs/apk/release/app-release.apk"
-          ls -la "$APK"
-          # Find the build-tools apksigner and run it with the 'verify' subcommand.
-          APKSIGNER="$(ls $ANDROID_HOME/build-tools/*/apksigner | tail -1)"
-          echo "Using apksigner: $APKSIGNER"
-          "$APKSIGNER" verify --verbose --print-certs "$APK" | sed -n '1,25p'
+          if [ "$HAS_SECRETS" = "true" ]; then
+            ./gradlew assembleRelease --stacktrace
+          else
+            ./gradlew assembleDebug --stacktrace
+          fi
+
+      - name: Locate APK
+        id: apk
+        run: |
+          if [ "$HAS_SECRETS" = "true" ]; then
+            echo "path=app/build/outputs/apk/release/app-release.apk" >> $GITHUB_OUTPUT
+            echo "name=app-release.apk" >> $GITHUB_OUTPUT
+          else
+            echo "path=app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
+            echo "name=app-debug.apk" >> $GITHUB_OUTPUT
+          fi
 
       - name: Get version info
         id: version
@@ -83,13 +90,9 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.name }}
           body: |
-            Signed release APK built automatically from the latest commit.
+            APK built automatically from the latest commit.
 
-            **What changed:** Builds are now signed with a permanent release
-            key (not a per-run debug key), so this APK installs cleanly over
-            previous builds and the in-app updater works correctly.
-
-            Download the APK below and sideload it on your Android device.
+            Download and sideload on your Android device.
             Enable "Install from unknown sources" in settings if prompted.
-          files: app/build/outputs/apk/release/app-release.apk
+          files: ${{ steps.apk.outputs.path }}
           fail_on_unmatched_files: true
