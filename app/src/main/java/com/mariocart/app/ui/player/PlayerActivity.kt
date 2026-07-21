@@ -1833,6 +1833,11 @@ private fun ExoPlayerView(
     var selectedQuality by remember { mutableStateOf("Auto") }
     var showQualityMenu by remember { mutableStateOf(false) }
 
+    // ── Subtitle state ──
+    var availableSubtitles by remember { mutableStateOf<List<SubtitleTrackInfo>>(emptyList()) }
+    var selectedSubtitle by remember { mutableStateOf("Off") }
+    var showSubtitleMenu by remember { mutableStateOf(false) }
+
     // Track when the first frame has rendered so we can hide the thumbnail.
     var isReady by remember { mutableStateOf(false) }
 
@@ -1908,6 +1913,8 @@ private fun ExoPlayerView(
         transientRetryCount = 0
         availableQualities = emptyList()
         selectedQuality = "Auto"
+        availableSubtitles = emptyList()
+        selectedSubtitle = "Off"
     }
 
     // Build the MediaItem fresh from the current URL every time. Previously
@@ -2051,6 +2058,7 @@ private fun ExoPlayerView(
                                     // gets a fresh allowance of retries.
                                     transientRetryCount = 0
                                     populateQualities(this@apply) { q -> availableQualities = q }
+                                    populateSubtitles(this@apply) { s -> availableSubtitles = s }
                                     // ── Resume from saved position ────────── //
                                     // If the player was launched from a
                                     // Continue Watching card (resumePositionMs
@@ -2116,7 +2124,7 @@ private fun ExoPlayerView(
                                 playChangeHandler.value.invoke(isPlayingChanged)
                                 // If playback resumed, auto-close the quality
                                 // menu so it never lingers over playing video.
-                                if (isPlayingChanged) showQualityMenu = false
+                                if (isPlayingChanged) { showQualityMenu = false; showSubtitleMenu = false }
                             }
 
                             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
@@ -2124,6 +2132,7 @@ private fun ExoPlayerView(
                                 // for HLS — fire here too so the quality list
                                 // populates as soon as the manifest is parsed.
                                 populateQualities(this@apply) { q -> availableQualities = q }
+                                populateSubtitles(this@apply) { s -> availableSubtitles = s }
                                 // Re-assert English audio preference once the
                                 // real track list is known — HLS manifests for
                                 // multi-audio sources often expose the language
@@ -2211,54 +2220,99 @@ private fun ExoPlayerView(
         )
         } // end key(url)
 
-        // ── Quality picker overlay — only while the video is PAUSED ──
-        // The quality selector must not appear over active playback; it only
-        // shows when the user pauses (TV shows & movies alike). This matches
-        // the same pause-gating as the stream selector above.
-        if (availableQualities.isNotEmpty() && !isPlaying) {
+        // ── Quality & subtitle overlays — only while the video is PAUSED ──
+        if (!isPlaying && (availableQualities.isNotEmpty() || availableSubtitles.isNotEmpty())) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = 8.dp, end = 8.dp),
                 contentAlignment = Alignment.TopEnd
             ) {
-                TextButton(
-                    onClick = { showQualityMenu = true },
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    Text(
-                        text = "⬡ $selectedQuality",
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        modifier = Modifier
-                            .background(
-                                Color(0xCC000000),
-                                RoundedCornerShape(6.dp)
+                Column(horizontalAlignment = Alignment.End) {
+                    // Quality picker
+                    if (availableQualities.isNotEmpty()) {
+                        TextButton(
+                            onClick = { showQualityMenu = true },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                text = "⬡ $selectedQuality",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                modifier = Modifier
+                                    .background(
+                                        Color(0xCC000000),
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
                             )
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
-                }
-                DropdownMenu(
-                    expanded = showQualityMenu,
-                    onDismissRequest = { showQualityMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Auto") },
-                        onClick = {
-                            showQualityMenu = false
-                            selectedQuality = "Auto"
-                            trackSelector?.let { applyAutoQuality(it) }
                         }
-                    )
-                    availableQualities.forEach { info ->
-                        DropdownMenuItem(
-                            text = { Text(info.label) },
-                            onClick = {
-                                showQualityMenu = false
-                                selectedQuality = info.label
-                                trackSelector?.let { applyQuality(it, info) }
+                        DropdownMenu(
+                            expanded = showQualityMenu,
+                            onDismissRequest = { showQualityMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Auto") },
+                                onClick = {
+                                    showQualityMenu = false
+                                    selectedQuality = "Auto"
+                                    trackSelector?.let { applyAutoQuality(it) }
+                                }
+                            )
+                            availableQualities.forEach { info ->
+                                DropdownMenuItem(
+                                    text = { Text(info.label) },
+                                    onClick = {
+                                        showQualityMenu = false
+                                        selectedQuality = info.label
+                                        trackSelector?.let { applyQuality(it, info) }
+                                    }
+                                )
                             }
-                        )
+                        }
+                    }
+                    // Subtitle picker
+                    if (availableSubtitles.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(
+                            onClick = { showSubtitleMenu = true },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                text = "CC $selectedSubtitle",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                modifier = Modifier
+                                    .background(
+                                        Color(0xCC000000),
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showSubtitleMenu,
+                            onDismissRequest = { showSubtitleMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Off") },
+                                onClick = {
+                                    showSubtitleMenu = false
+                                    selectedSubtitle = "Off"
+                                    trackSelector?.let { disableSubtitles(it) }
+                                }
+                            )
+                            availableSubtitles.forEach { info ->
+                                DropdownMenuItem(
+                                    text = { Text(info.label) },
+                                    onClick = {
+                                        showSubtitleMenu = false
+                                        selectedSubtitle = info.label
+                                        trackSelector?.let { applySubtitle(it, info) }
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -2598,6 +2652,58 @@ private fun applyQuality(selector: DefaultTrackSelector, info: TrackInfo) {
     selector.parameters = DefaultTrackSelector.ParametersBuilder(selector.context!!)
         .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
         .setForceHighestSupportedBitrate(true)
+        .setOverrideForType(
+            TrackSelectionOverride(info.mediaTrackGroup, info.trackIndex)
+        )
+        .build()
+}
+
+// ── Subtitle track types & helpers ─────────────────────────────────── //
+
+/** Describes one selectable subtitle (text) track. */
+private data class SubtitleTrackInfo(
+    val label: String,
+    val mediaTrackGroup: androidx.media3.common.TrackGroup,
+    val trackIndex: Int,
+    val language: String?
+)
+
+/** Reads text/subtitle tracks from the player into a sorted list. */
+private fun populateSubtitles(
+    player: ExoPlayer,
+    onResult: (List<SubtitleTrackInfo>) -> Unit
+) {
+    val tracks = player.currentTracks
+    val result = mutableListOf<SubtitleTrackInfo>()
+    for (group in tracks.groups) {
+        if (group.type != C.TRACK_TYPE_TEXT) continue
+        for (ti in 0 until group.length) {
+            if (!group.isTrackSupported(ti)) continue
+            val format = group.getTrackFormat(ti)
+            val lang = format.language?.ifBlank { null }
+            val sb = StringBuilder("CC")
+            if (lang != null) sb.append(" ($lang)")
+            if (format.label?.isNotBlank() == true) sb.append(" - ").append(format.label)
+            result.add(SubtitleTrackInfo(sb.toString(), group.mediaTrackGroup, ti, lang))
+        }
+    }
+    result.sortBy { it.language ?: "" }
+    if (result.isNotEmpty()) onResult(result)
+}
+
+/** Disables subtitle rendering. */
+private fun disableSubtitles(selector: DefaultTrackSelector) {
+    selector.parameters = DefaultTrackSelector.ParametersBuilder(selector.context!!)
+        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+        .setPreferredTextLanguage("")
+        .build()
+}
+
+/** Forces a specific subtitle track. */
+private fun applySubtitle(selector: DefaultTrackSelector, info: SubtitleTrackInfo) {
+    selector.parameters = DefaultTrackSelector.ParametersBuilder(selector.context!!)
+        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+        .setPreferredTextLanguage(info.language ?: "en")
         .setOverrideForType(
             TrackSelectionOverride(info.mediaTrackGroup, info.trackIndex)
         )
