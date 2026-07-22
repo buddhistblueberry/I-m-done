@@ -1840,6 +1840,8 @@ private fun ExoPlayerView(
     var selectedSubtitle by remember { mutableStateOf("Off") }
     var showSubtitleMenu by remember { mutableStateOf(false) }
     var subdlSubtitles by remember { mutableStateOf<List<Subtitle>>(emptyList()) }
+    // Tracks whether subtitles have been pushed to the player after async fetch.
+    var subtitlesPushedToPlayer by remember { mutableStateOf(false) }
 
     // Track when the first frame has rendered so we can hide the thumbnail.
     var isReady by remember { mutableStateOf(false) }
@@ -1918,10 +1920,12 @@ private fun ExoPlayerView(
         selectedQuality = "Auto"
         availableSubtitles = emptyList()
         selectedSubtitle = "Off"
+        subtitlesPushedToPlayer = false
     }
 
     // ── Fetch subtitles from Subdl (one call per content, cached in state) ──
     LaunchedEffect(progressTmdbId, progressContentType, progressSeason, progressEpisode) {
+        subtitlesPushedToPlayer = false
         if (progressTmdbId != -1) {
             subdlSubtitles = SubdlFetcher.fetch(
                 progressTmdbId, progressContentType,
@@ -2244,16 +2248,13 @@ private fun ExoPlayerView(
                 // This update block pushes the new mediaItem (with subtitles)
                 // onto the existing player without destroying/recreating it,
                 // so playback is not interrupted. We check whether subtitles
-                // are already present to avoid redundant re-prepares.
-                if (subdlSubtitles.isNotEmpty() && player != null) {
-                    val currentItem = player?.currentMediaItem
-                    val hasSubtitles = currentItem?.subtitleConfigurations?.isNotEmpty() == true
-                    if (!hasSubtitles) {
-                        player?.apply {
-                            setMediaItem(mediaItem, System.currentTimeMillis())
-                            prepare()
-                            playWhenReady = true
-                        }
+                // have already been pushed to avoid redundant re-prepares.
+                if (subdlSubtitles.isNotEmpty() && player != null && !subtitlesPushedToPlayer) {
+                    subtitlesPushedToPlayer = true
+                    player?.apply {
+                        setMediaItem(mediaItem, System.currentTimeMillis())
+                        prepare()
+                        playWhenReady = true
                     }
                 }
             },
