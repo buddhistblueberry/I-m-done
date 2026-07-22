@@ -2233,7 +2233,30 @@ private fun ExoPlayerView(
                     setShutterBackgroundColor(android.graphics.Color.BLACK)
                 }
             },
-            update = {},
+            update = { view ->
+                // ── Push subtitle updates to the existing player ──
+                // Subtitles from Subdl arrive asynchronously AFTER the player
+                // is first built (the factory only runs once due to key(url)).
+                // When subdlSubtitles finally loads, mediaItem recomputes with
+                // subtitle configurations, but the player still has the old
+                // mediaItem without subtitles — so they never render.
+                //
+                // This update block pushes the new mediaItem (with subtitles)
+                // onto the existing player without destroying/recreating it,
+                // so playback is not interrupted. We check whether subtitles
+                // are already present to avoid redundant re-prepares.
+                if (subdlSubtitles.isNotEmpty() && player != null) {
+                    val currentItem = player?.currentMediaItem
+                    val hasSubtitles = currentItem?.subtitleConfigurations?.isNotEmpty() == true
+                    if (!hasSubtitles) {
+                        player?.apply {
+                            setMediaItem(mediaItem, System.currentTimeMillis())
+                            prepare()
+                            playWhenReady = true
+                        }
+                    }
+                }
+            },
             onRelease = {
                 player?.release()
                 // Clear the active-player bridge so remote keys can't drive a
