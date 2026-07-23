@@ -1926,6 +1926,9 @@ private fun ExoPlayerView(
     // ── Fetch subtitles from Subdl (one call per content, cached in state) ──
     LaunchedEffect(progressTmdbId, progressContentType, progressSeason, progressEpisode) {
         subtitlesPushedToPlayer = false
+        // Clear old subtitles immediately so stale subs from a previous title
+        // don't briefly show on the new content while the fetch is in flight.
+        subdlSubtitles = emptyList()
         if (progressTmdbId != -1) {
             subdlSubtitles = SubdlFetcher.fetch(
                 progressTmdbId, progressContentType,
@@ -2216,6 +2219,10 @@ private fun ExoPlayerView(
                         playWhenReady = true
                     }
                 player = exoPlayer
+                // If subtitles were already fetched for this content, they're
+                // already baked into the mediaItem via setSubtitleConfigurations.
+                // Mark the flag so the update block doesn't redundantly push them.
+                if (subdlSubtitles.isNotEmpty()) subtitlesPushedToPlayer = true
                 // Publish the live player so PlayerActivity.onKeyDown can drive
                 // Android TV remote play/pause (media keys + OK/DPAD-center).
                 PlayerActivity.activePlayer = exoPlayer
@@ -2252,7 +2259,12 @@ private fun ExoPlayerView(
                 if (subdlSubtitles.isNotEmpty() && player != null && !subtitlesPushedToPlayer) {
                     subtitlesPushedToPlayer = true
                     player?.apply {
-                        setMediaItem(mediaItem, System.currentTimeMillis())
+                        // Preserve current playback position so the user doesn't
+                        // jump to an arbitrary point when subtitles arrive.
+                        // System.currentTimeMillis() was a bug — it's a Unix
+                        // timestamp, not a position.
+                        val currentPos = currentPosition
+                        setMediaItem(mediaItem, currentPos)
                         prepare()
                         playWhenReady = true
                     }
